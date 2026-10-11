@@ -420,6 +420,16 @@ function maybeInvalidateForOptionsChange(
 	state.previousOutdir = compilerOptions.outdir;
 }
 
+function shouldFailBuild(
+	options: Pick<CompilerOptions, "checkTranslations">,
+	watchMode: boolean
+): boolean {
+	return (
+		process.env.NODE_ENV === "production" ||
+		(options.checkTranslations === true && !watchMode)
+	);
+}
+
 // Compiles and stores the result plus its inputs digest on the plugin
 // state. Callers decide whether to persist the compilation cache.
 async function compileAndUpdateState(args: {
@@ -457,6 +467,7 @@ async function compileAndUpdateState(args: {
 async function runCompilation(args: {
 	state: PluginState;
 	compilerOptions: CompilerOptions;
+	watchMode: boolean;
 }): Promise<void> {
 	const compilerOptions = args.compilerOptions;
 	const { state } = args;
@@ -513,7 +524,7 @@ async function runCompilation(args: {
 		state.previousInputsDigest = undefined;
 		logger.error("Failed to compile project:", (error as Error).message);
 		logger.info("Please check your translation files for syntax errors.");
-		if (process.env.NODE_ENV === "production") throw error;
+		if (shouldFailBuild(compilerOptions, args.watchMode)) throw error;
 	}
 }
 
@@ -531,6 +542,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
 	// bundler doesn't provide one. The config file is resolved inside the
 	// project directory.
 	let discoveryRoot: string | undefined;
+	let isViteDevServer = false;
 	// Bound to the hook context in buildStart so that watchChange can
 	// register additional files.
 	let addWatchFile: ((path: string) => void) | undefined;
@@ -698,17 +710,22 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
 		enforce: "pre",
 		async buildStart() {
 			addWatchFile = this.addWatchFile?.bind(this);
+			const nativeContext = this.getNativeBuildContext?.();
+			const watchMode =
+				isViteDevServer ||
+				(this as { meta?: { watchMode?: boolean } }).meta?.watchMode === true ||
+				((nativeContext?.framework === "webpack" ||
+					nativeContext?.framework === "rspack") &&
+					nativeContext.compiler.watchMode === true);
 			try {
 				const loaded = await loadActiveConfig();
 				const args = resolveOptionsWith(loaded);
 				lastOptions = args;
-				await runCompilation({ state, compilerOptions: args });
+				await runCompilation({ state, compilerOptions: args, watchMode });
 			} catch (error) {
-				// Config errors are converted to last-good options by
-				// loadActiveConfig; compilation errors are handled inside
-				// runCompilation. Anything escaping is unexpected — fail the
-				// build in production, keep serving in development.
-				if (process.env.NODE_ENV === "production") throw error;
+				// A strict non-watch build must fail even when the bundler
+				// leaves NODE_ENV unset or explicitly uses development mode.
+				if (shouldFailBuild(lastOptions ?? userArgs, watchMode)) throw error;
 				logger.error(
 					"Failed to prepare paraglide compilation:",
 					(error as Error).message
@@ -768,8 +785,9 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
 				},
 			},
 			configResolved: {
-				handler: (config: { root?: string }) => {
+				handler: (config: { root?: string; command?: string }) => {
 					discoveryRoot = config.root;
+					isViteDevServer = config.command === "serve";
 				},
 			},
 		},
@@ -797,7 +815,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
 						"Failed to load paraglide config:",
 						(error as Error).message
 					);
-					if (process.env.NODE_ENV === "production") throw error;
+					if (shouldFailBuild(lastOptions ?? userArgs, false)) throw error;
 					return;
 				}
 				const outputStructure = resolveOutputStructure(args);
@@ -852,7 +870,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
 					state.previousInputsDigest = undefined;
 					logger.warn("Failed to compile project:", (error as Error).message);
 					logger.warn("Please check your translation files for syntax errors.");
-					if (process.env.NODE_ENV === "production") throw error;
+					if (shouldFailBuild(args, false)) throw error;
 				}
 			});
 		},
@@ -884,7 +902,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
 						"Failed to load paraglide config:",
 						(error as Error).message
 					);
-					if (process.env.NODE_ENV === "production") throw error;
+					if (shouldFailBuild(lastOptions ?? userArgs, false)) throw error;
 					return;
 				}
 				const outputStructure = resolveOutputStructure(args);
@@ -935,7 +953,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
 					state.previousInputsDigest = undefined;
 					logger.warn("Failed to compile project:", (error as Error).message);
 					logger.warn("Please check your translation files for syntax errors.");
-					if (process.env.NODE_ENV === "production") throw error;
+					if (shouldFailBuild(args, false)) throw error;
 				}
 			});
 		},
