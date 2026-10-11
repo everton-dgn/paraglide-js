@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { UnpluginBuildContext, UnpluginOptions } from "unplugin";
 import { unpluginFactory } from "./unplugin.js";
+import { paraglideEsbuildPlugin } from "./esbuild.js";
 
 beforeEach(() => {
 	consola.mockTypes(() => vi.fn());
@@ -15,7 +16,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-async function createFixture(checkTranslations = true) {
+async function createFixture(checkTranslations = true, watchMode?: boolean) {
 	const fs = memfs({
 		"/project.inlang/settings.json": JSON.stringify({
 			baseLocale: "en",
@@ -33,14 +34,31 @@ async function createFixture(checkTranslations = true) {
 		"/messages/de.json": "{}",
 		"/output/messages.js": "previous output",
 	}).fs as unknown as typeof import("node:fs");
-	const plugin = unpluginFactory({
+	const options = {
 		project: "/project.inlang",
 		outdir: "/output",
 		checkTranslations,
+		watchMode,
 		emitReadme: false,
 		fs,
-	}) as UnpluginOptions;
-	return { fs, plugin };
+	};
+	const plugin = unpluginFactory(options) as UnpluginOptions;
+	return { fs, plugin, options };
+}
+
+async function esbuildStart(
+	options: Parameters<typeof paraglideEsbuildPlugin>[0]
+) {
+	let start: (() => unknown) | undefined;
+	const plugin = paraglideEsbuildPlugin(options);
+	await plugin.setup({
+		initialOptions: {},
+		onStart: (callback: () => unknown) => {
+			start = callback;
+		},
+	} as Parameters<typeof plugin.setup>[0]);
+	expect(start).toBeTypeOf("function");
+	return () => start!();
 }
 
 function context(watchMode = false): UnpluginBuildContext {
@@ -143,5 +161,67 @@ test("builds still allow locale fallback when translation checks are disabled", 
 	await expect(plugin.buildStart!.call(context())).resolves.toBeUndefined();
 	expect(fs.readFileSync("/output/messages.js", "utf8")).not.toBe(
 		"previous output"
+	);
+});
+
+test.each([undefined, "development"])(
+	"esbuild watchMode preserves output and recovers with NODE_ENV=%s",
+	async (nodeEnv) => {
+		vi.stubEnv("NODE_ENV", nodeEnv);
+		const { fs, options } = await createFixture(true, true);
+		const run = await esbuildStart(options);
+		await expect(run()).resolves.toBeUndefined();
+		expect(fs.readFileSync("/output/messages.js", "utf8")).toBe(
+			"previous output"
+		);
+		await fs.promises.writeFile(
+			"/messages/de.json",
+			JSON.stringify({ hello: "Hallo" })
+		);
+		await expect(run()).resolves.toBeUndefined();
+		const generated = fs.readFileSync("/output/messages.js", "utf8");
+		const translated = fs.readFileSync("/output/messages/de.js", "utf8");
+		expect(generated).not.toBe("previous output");
+		expect(translated).toContain("Hallo");
+		await fs.promises.writeFile("/messages/de.json", "{}");
+		await expect(run()).resolves.toBeUndefined();
+		expect(fs.readFileSync("/output/messages.js", "utf8")).toBe(generated);
+		expect(fs.readFileSync("/output/messages/de.js", "utf8")).toBe(translated);
+		await fs.promises.writeFile(
+			"/messages/de.json",
+			JSON.stringify({ hello: "Hallo again" })
+		);
+		await expect(run()).resolves.toBeUndefined();
+		expect(fs.readFileSync("/output/messages/de.js", "utf8")).toContain(
+			"Hallo again"
+		);
+	}
+);
+
+test.each([undefined, false])(
+	"esbuild builds stay strict with watchMode=%s",
+	async (watchMode) => {
+		vi.stubEnv("NODE_ENV", undefined);
+		const { fs, options } = await createFixture(true, watchMode);
+		const run = await esbuildStart(options);
+		await expect(run()).rejects.toThrow(/missing-translation.*hello.*de/s);
+		expect(fs.readFileSync("/output/messages.js", "utf8")).toBe(
+			"previous output"
+		);
+	}
+);
+
+test("production esbuild builds stay strict with watchMode enabled", async () => {
+	vi.stubEnv("NODE_ENV", "production");
+	const { options } = await createFixture(true, true);
+	const run = await esbuildStart(options);
+	await expect(run()).rejects.toThrow(/missing-translation.*hello.*de/s);
+});
+
+test("an explicit watchMode overrides bundler watch detection", async () => {
+	vi.stubEnv("NODE_ENV", undefined);
+	const { plugin } = await createFixture(true, false);
+	await expect(plugin.buildStart!.call(context(true))).rejects.toThrow(
+		/missing-translation.*hello.*de/s
 	);
 });

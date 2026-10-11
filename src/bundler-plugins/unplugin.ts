@@ -33,9 +33,9 @@ const PLUGIN_NAME = "unplugin-paraglide-js";
  * Relative paths are resolved against the tool's project root (Vite `root`,
  * webpack/rspack `context`, else the process working directory).
  *
- * Every other property is optional: values that are not provided are read
- * from the config file, and anything still missing falls back to the
- * built-in defaults.
+ * Every other property is optional. Compiler options that are not provided
+ * are read from the config file, and anything still missing falls back to
+ * the built-in defaults. `watchMode` is only accepted as a plugin option.
  *
  * @example
  * ```ts
@@ -59,6 +59,14 @@ export type ParaglidePluginOptions = Omit<
 	 * `root`, webpack/rspack `context`, else the process working directory).
 	 */
 	project: string;
+	/**
+	 * Override automatic watch-mode detection. Set to `true` when using
+	 * esbuild's `context().watch()` or `context().serve()`, which do not
+	 * expose their mode to plugins. Translation check failures then keep
+	 * the last successfully generated output during development.
+	 * `NODE_ENV=production` still makes compilation failures fatal.
+	 */
+	watchMode?: boolean;
 };
 
 const logger = new Logger();
@@ -534,7 +542,10 @@ type UnpluginFactoryWithOptions = (
 	userArgs: ParaglidePluginOptions
 ) => ReturnType<UnpluginFactory<ParaglidePluginOptions>>;
 
-export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
+export const unpluginFactory: UnpluginFactoryWithOptions = ({
+	watchMode: explicitWatchMode,
+	...userArgs
+}) => {
 	const state = getPluginState(userArgs);
 	const { readFiles, clearReadFiles } = state;
 	// Project root as reported by the bundler (vite `root`, webpack/rspack
@@ -712,11 +723,13 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (userArgs) => {
 			addWatchFile = this.addWatchFile?.bind(this);
 			const nativeContext = this.getNativeBuildContext?.();
 			const watchMode =
-				isViteDevServer ||
-				(this as { meta?: { watchMode?: boolean } }).meta?.watchMode === true ||
-				((nativeContext?.framework === "webpack" ||
-					nativeContext?.framework === "rspack") &&
-					nativeContext.compiler.watchMode === true);
+				explicitWatchMode ??
+				(isViteDevServer ||
+					(this as { meta?: { watchMode?: boolean } }).meta?.watchMode ===
+						true ||
+					((nativeContext?.framework === "webpack" ||
+						nativeContext?.framework === "rspack") &&
+						nativeContext.compiler.watchMode === true));
 			try {
 				const loaded = await loadActiveConfig();
 				const args = resolveOptionsWith(loaded);

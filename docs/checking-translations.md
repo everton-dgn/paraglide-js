@@ -61,7 +61,38 @@ with an error, and production bundler builds fail. During development, bundler
 watchers report the error and keep the last successfully generated output; this
 option does not block the dev server from serving that output.
 
-The default is `false`, so projects that intentionally rely on locale fallback
+With esbuild, set `watchMode: true` on the plugin when using
+`context().watch()` or `context().serve()`. esbuild does not expose these modes
+to plugins, so they cannot be detected automatically:
+
+```ts
+import * as esbuild from "esbuild";
+import { paraglideEsbuildPlugin } from "@inlang/paraglide-js";
+
+const context = await esbuild.context({
+	entryPoints: ["src/index.ts"],
+	bundle: true,
+	outdir: "dist",
+	plugins: [
+		paraglideEsbuildPlugin({
+			project: "./project.inlang",
+			outdir: "./src/paraglide",
+			checkTranslations: true,
+			watchMode: true,
+		}),
+	],
+});
+
+await context.watch(); // Or: await context.serve();
+```
+
+`watchMode` is a plugin option, not a compiler or `paraglide.config` option.
+Leave it unset for automatic detection in other bundlers and for strict esbuild
+builds. An explicit `false` makes the plugin's build-start hook strict even when
+the bundler reports watch mode. `NODE_ENV=production` keeps that hook strict
+regardless of `watchMode`.
+
+The default for `checkTranslations` is `false`, so projects that intentionally rely on locale fallback
 keep their existing behavior. Use `inlang check` for unused-message analysis,
 locale or check selection, or a machine-readable report.
 
