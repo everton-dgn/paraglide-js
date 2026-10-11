@@ -38,6 +38,33 @@ All checks run by default. Pass one or more check flags, such as `--missing-tran
 > [!NOTE]
 > `inlang validate` and `inlang lint` are deprecated. `inlang lint` does nothing and exits with `0`, so replace it with `inlang check` in your scripts and CI.
 
+## Check while compiling
+
+To reject incomplete translations every time Paraglide compiles, enable
+`checkTranslations` in `project.inlang/paraglide.config.ts`:
+
+```ts
+export default {
+	checkTranslations: true,
+};
+```
+
+The CLI and bundler plugins load this configuration. You can also pass
+`checkTranslations: true` directly to a plugin, `compile()`, or `compileProject()`.
+The compiler uses the inlang SDK's translation checks on the bundles it has
+already loaded, comparing all configured locales against `baseLocale`. It checks
+missing and empty translations and forms, variables, markup, selectors, and
+plural or select forms. It does not load a second project or start another process.
+
+Findings reject compilation before generated files are written. The CLI exits
+with an error, and production bundler builds fail. During development, bundler
+watchers report the error and keep the last successfully generated output; this
+option does not block the dev server from serving that output.
+
+The default is `false`, so projects that intentionally rely on locale fallback
+keep their existing behavior. Use `inlang check` for unused-message analysis,
+locale or check selection, or a machine-readable report.
+
 ## Unused messages
 
 ```sh
