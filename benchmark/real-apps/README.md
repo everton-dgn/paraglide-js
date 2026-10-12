@@ -50,6 +50,6 @@ Compiler/build time reports in both projects were inspected, but SDK/Lix compila
 
 The standard compiler enables literal inlining for `message-modules`. It retains the existing language-grouped helpers for `locale-modules`: flattening those strings into per-message dispatchers regressed gzip in the audit. The standalone low-level `compileBundle` API keeps its previous output unless its layout caller explicitly opts in. No new `CompilerOptions` setting is needed.
 
-The guarded `locale-modules` artifacts match main byte-for-byte in raw/gzip/Brotli for both catalogs; the baseline and guarded results are checked in. To repeat a layout comparison, set `PARAGLIDE_OUTPUT_STRUCTURE=locale-modules` when invoking `run.mjs`.
+The guarded `locale-modules` artifacts have matching emitted raw/gzip/Brotli byte counts with main for both catalogs; the baseline and guarded results are checked in. To repeat a layout comparison, set `PARAGLIDE_OUTPUT_STRUCTURE=locale-modules` when invoking `run.mjs`.
 
 For the pinned full DrawDB Vite app and its actual routes, run `migrate-drawdb.mjs` followed by `drawdb-browser.mjs` after generating `baseline` and `inline` catalog outputs. See `drawdb-results.md` for exact inputs, the adapter's bounded compatibility, rendered-text checks, and the whole-app denominator. The gzip whole-app result remains 1.6% larger than native i18next; the local Brotli route transfer is effectively equal, with no demonstrated LCP gain.

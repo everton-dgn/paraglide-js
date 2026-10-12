@@ -41,3 +41,26 @@ The measured incremental gain over the already-inline output is small: DrawDB im
 **Actionable compatibility defect (P2):** the emitted dispatcher calls `Object.hasOwn(texts, locale)` at runtime (the discarded `compile-bundle.ts` candidate). `Object.hasOwn` is an ES2022 API. The benchmark builds with `target: "esnext"`, and Vite/Rollup do not polyfill missing built-in methods when lowering syntax. The repository does not set a minimum browser/runtime version. I confirmed that the generated table message throws `TypeError: Object.hasOwn is not a function` when run with that method unavailable, while the pre-table output has no such dependency. Emit an older equivalent such as `Object.prototype.hasOwnProperty.call(texts, locale)` or declare and enforce an ES2022 minimum before shipping this code.
 
 The table experiment was rejected and removed from the stack because it failed the metric gate; its runtime dependency is not present in the published literal-inlining change.
+
+## Independent review: `3f61743`
+
+### Guard and correctness
+
+The layout guard is correct. `compileProject` opts into plain-text inlining only when `outputStructure` is `message-modules`; `locale-modules` retains the previous language-grouped helper references. The low-level `compileBundle` entry point now defaults to no inlining, preserving its previous behavior unless a layout caller explicitly opts in. The static per-locale build remains excluded. I found no fallback, markup, middleware, or generated-JavaScript correctness defect in this guard.
+
+Coverage includes direct compile-bundle tests opting in to exercise literal output, a new low-level default-off assertion, an integration test for locale-modules retaining helpers, and the existing compile-project default message-modules test that verifies inlining and strict `checkJs`. I ran the focused suite from the clean `3f61743` worktree:
+
+```text
+pnpm exec vitest run src/compiler/compile-bundle.test.ts src/compiler/compile-project.test.ts src/compiler/output-structure/message-modules.test.ts
+3 files passed; 94 tests passed; 4 skipped
+```
+
+The run emitted the existing warning that `customLocalFormatter` is unknown and ignored. It completed successfully.
+
+### Benchmark claims
+
+The layout audit supports the stated conclusion that locale-modules no longer takes the earlier gzip regression: guarded and main results have equal measured output sizes for both catalogs at all three levels. DrawDB is 1,245,504 raw / 298,846 gzip / 230,024 Brotli bytes; Memos is 2,874,195 / 754,598 / 548,248 bytes. The report JSON stores these size totals and a compiler-artifact hash, but no hash of the generated bundle itself. The README phrase “match main byte-for-byte in raw/gzip/Brotli” should therefore be tightened to “have matching emitted byte counts” unless generated-file equality is separately checked.
+
+The benchmark documentation does not claim a greater-than-10% whole-app gain. It explicitly says the whole DrawDB gzip chunk remains 1.6% larger than native i18next, Brotli route transfer is effectively equal, and the local LCP samples show no improvement. The greater-than-10% result is correctly scoped to isolated complete-catalog localization bytes versus the earlier Paraglide output; the docs distinguish this from route payloads, lazy Memos loading, and field performance. The browser fixture's limited migration adapter and blocked external requests are also disclosed.
+
+This review covers commit `3f61743` only; it does not review the later locale-tuple candidate in the shared working tree.
