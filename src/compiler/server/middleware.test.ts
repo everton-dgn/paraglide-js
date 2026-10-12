@@ -1,6 +1,7 @@
 import { test, expect } from "vitest";
 import { createParaglide } from "../create-paraglide.js";
 import { newProject } from "@inlang/sdk";
+import type { CompilerOptions } from "../compiler-options.js";
 
 test("sets the locale and origin", async () => {
 	const runtime = await createParaglide({
@@ -118,6 +119,7 @@ test("skips i18n middleware behavior for excluded routeStrategies", async () => 
 	);
 
 	expect(response.status).toBe(200);
+	expect(response.headers.get("Vary")).toBe(null);
 	expect(await response.text()).toBe("en|https://example.com/api/data");
 });
 
@@ -537,7 +539,7 @@ test("sets Vary: Accept-Language header when preferredLanguage strategy is used 
 	expect(response.headers.get("Vary")).toBe("Accept-Language");
 });
 
-test("does not set Vary header when preferredLanguage strategy is not used", async () => {
+test("sets Vary: Cookie without Accept-Language for a cookie redirect", async () => {
 	const runtime = await createParaglide({
 		blob: await newProject({
 			settings: {
@@ -576,8 +578,341 @@ test("does not set Vary header when preferredLanguage strategy is not used", asy
 	expect(response.headers.get("Location")).toBe(
 		"https://example.com/fr/some-path"
 	);
-	// Should NOT have Vary header when preferredLanguage strategy is not used
+	expect(response.headers.get("Vary")).toBe("Cookie");
+});
+
+test.each(
+	(
+		[
+			{
+				strategy: ["cookie", "url", "baseLocale"],
+				vary: "Cookie",
+				locale: "fr",
+			},
+			{
+				strategy: ["preferredLanguage", "url", "baseLocale"],
+				vary: "Accept-Language",
+				locale: "fr",
+			},
+			{
+				strategy: ["url", "cookie", "preferredLanguage", "baseLocale"],
+				vary: "Cookie, Accept-Language",
+				locale: "fr",
+			},
+			{ strategy: ["url", "baseLocale"], vary: null, locale: "en" },
+		] satisfies {
+			strategy: NonNullable<CompilerOptions["strategy"]>;
+			vary: string | null;
+			locale: string;
+		}[]
+	).flatMap((scenario) => [
+		{
+			...scenario,
+			method: "GET",
+			destination: "document",
+			status: 307,
+			body: "",
+			location: `https://example.com/${scenario.locale}/page?campaign=example`,
+		},
+		{
+			...scenario,
+			method: "GET",
+			destination: "",
+			status: 200,
+			body: scenario.locale,
+			location: null,
+		},
+		{
+			...scenario,
+			method: "HEAD",
+			destination: "",
+			status: 200,
+			body: "",
+			location: null,
+		},
+	])
+)(
+	"sets Vary from $strategy for $method with destination '$destination'",
+	async ({ strategy, vary, method, destination, status, body, location }) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
+			}),
+			strategy: ["url", "cookie", "preferredLanguage", "baseLocale"],
+			routeStrategies: [{ match: "/page", strategy }],
+			urlPatterns: [
+				{
+					pattern: "https://example.com/:path(.*)?",
+					localized: [
+						["en", "https://example.com/en/:path(.*)?"],
+						["fr", "https://example.com/fr/:path(.*)?"],
+					],
+				},
+			],
+		});
+
+		const response = await runtime.paraglideMiddleware(
+			new Request("https://example.com/page?campaign=example", {
+				method,
+				headers: {
+					cookie: "PARAGLIDE_LOCALE=fr",
+					"Accept-Language": "fr",
+					"Sec-Fetch-Dest": destination,
+				},
+			}),
+			({ locale }) => new Response(method === "HEAD" ? null : locale),
+			{
+				onRedirect: (response) => {
+					expect(response.headers.get("Vary")).toBe(vary);
+				},
+			}
+		);
+
+		expect(response.headers.get("Vary")).toBe(vary);
+		expect(response.status).toBe(status);
+		expect(response.headers.get("Location")).toBe(location);
+		expect(await response.text()).toBe(body);
+	}
+);
+
+test.each([
+	["Accept-Encoding", "Accept-Encoding, Cookie, Accept-Language"],
+	["accept-encoding, cookie", "accept-encoding, cookie, Accept-Language"],
+	[
+		"Accept-Encoding, ACCEPT-LANGUAGE",
+		"Accept-Encoding, ACCEPT-LANGUAGE, Cookie",
+	],
+	["cookie, ACCEPT-LANGUAGE", "cookie, ACCEPT-LANGUAGE"],
+	["*", "*"],
+	["Origin, *", "Origin, *"],
+])("merges negotiated response Vary with %s", async (vary, expected) => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "fr"] },
+		}),
+		strategy: ["cookie", "preferredLanguage", "baseLocale"],
+	});
+	const headers = new Headers({ Vary: vary, "Content-Type": "text/plain" });
+	headers.append("Set-Cookie", "theme=dark; Path=/");
+	headers.append("Set-Cookie", "session=example; Path=/");
+	const original = new Response("fr", {
+		status: 202,
+		statusText: "Accepted",
+		headers,
+	});
+	const response = await runtime.paraglideMiddleware(
+		new Request("https://example.com/page", {
+			headers: { cookie: "PARAGLIDE_LOCALE=fr" },
+		}),
+		() => original
+	);
+
+	expect(response.headers.get("Vary")).toBe(expected);
+	expect(response).toBe(original);
+	expect(response.headers.get("Content-Type")).toBe("text/plain");
+	expect(response.headers.getSetCookie()).toEqual(headers.getSetCookie());
+	expect(response.status).toBe(202);
+	expect(response.statusText).toBe("Accepted");
+	expect(response.body).toBe(original.body);
+	expect(await response.text()).toBe("fr");
+});
+
+test("varies negotiated responses even when preference headers are absent", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "fr"] },
+		}),
+		strategy: ["cookie", "preferredLanguage", "baseLocale"],
+	});
+	const response = await runtime.paraglideMiddleware(
+		new Request("https://example.com/page"),
+		({ locale }) => new Response(locale)
+	);
+
+	expect(response.headers.get("Vary")).toBe("Cookie, Accept-Language");
+	expect(await response.text()).toBe("en");
+});
+
+test.each([
+	["https://example.com/fr/page", "fr"],
+	["https://example.com/page", "en"],
+])(
+	"preserves Vary when the effective URL determines the locale: %s",
+	async (url, locale) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
+			}),
+			strategy: ["url", "cookie", "preferredLanguage", "baseLocale"],
+		});
+		const original = new Response(locale, {
+			headers: { Vary: "Accept-Encoding" },
+		});
+		const response = await runtime.paraglideMiddleware(
+			new Request("http://internal/page", {
+				headers: { cookie: "PARAGLIDE_LOCALE=fr" },
+			}),
+			({ locale: resolved }) => {
+				expect(resolved).toBe(locale);
+				return original;
+			},
+			{ effectiveRequestUrl: url }
+		);
+
+		expect(response).toBe(original);
+		expect(response.headers.get("Vary")).toBe("Accept-Encoding");
+	}
+);
+
+test.each(
+	(
+		[
+			{
+				strategy: ["cookie", "url", "preferredLanguage", "baseLocale"],
+				vary: "Cookie",
+			},
+			{
+				strategy: ["preferredLanguage", "url", "cookie", "baseLocale"],
+				vary: "Accept-Language",
+			},
+			{
+				strategy: ["cookie", "preferredLanguage", "url", "baseLocale"],
+				vary: "Cookie, Accept-Language",
+			},
+		] satisfies {
+			strategy: NonNullable<CompilerOptions["strategy"]>;
+			vary: string;
+		}[]
+	).flatMap((scenario) =>
+		["/page", "/en/page"].flatMap((path) =>
+			["GET", "HEAD"].flatMap((method) =>
+				["", "en", "fr"].map((preference) => ({
+					...scenario,
+					path,
+					method,
+					preference,
+				}))
+			)
+		)
+	)
+)(
+	"varies $method $path for $strategy with preference '$preference'",
+	async ({ strategy, vary, path, method, preference }) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
+			}),
+			strategy,
+		});
+		const response = await runtime.paraglideMiddleware(
+			new Request(`https://example.com${path}`, {
+				method,
+				headers: preference
+					? {
+							Cookie: `PARAGLIDE_LOCALE=${preference}`,
+							"Accept-Language": preference,
+						}
+					: {},
+			}),
+			({ locale }) => {
+				expect(locale).toBe(preference || "en");
+				return new Response(method === "HEAD" ? null : locale);
+			}
+		);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Vary")).toBe(vary);
+		expect(await response.text()).toBe(
+			method === "HEAD" ? "" : preference || "en"
+		);
+	}
+);
+
+test("preserves mutable response subclasses with the default strategy", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "fr"] },
+		}),
+	});
+	class CustomResponse extends Response {
+		marker = "custom";
+	}
+	const original = new CustomResponse("page");
+	const response = await runtime.paraglideMiddleware(
+		new Request("https://example.com/page"),
+		() => original
+	);
+	expect(response).toBe(original);
+	expect(response).toBeInstanceOf(CustomResponse);
+	expect((response as CustomResponse).marker).toBe("custom");
+	expect(response.headers.get("Vary")).toBe("Cookie");
+});
+
+test("preserves Response.error() without adding Vary", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "fr"] },
+		}),
+	});
+	const original = Response.error();
+	const response = await runtime.paraglideMiddleware(
+		new Request("https://example.com/page"),
+		() => original
+	);
+	expect(response).toBe(original);
+	expect(response.status).toBe(0);
 	expect(response.headers.get("Vary")).toBe(null);
+});
+
+test("propagates unexpected header update errors", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "fr"] },
+		}),
+	});
+	const original = new Response("page");
+	const failure = new Error("Cannot update headers");
+	original.headers.set = () => {
+		throw failure;
+	};
+	await expect(
+		runtime.paraglideMiddleware(
+			new Request("https://example.com/page"),
+			() => original
+		)
+	).rejects.toBe(failure);
+});
+
+test("adds Vary to a resolved response with immutable headers", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "fr"] },
+		}),
+		strategy: ["cookie", "baseLocale"],
+	});
+	const response = await runtime.paraglideMiddleware(
+		new Request("https://example.com/page"),
+		() => Response.redirect("https://example.com/login", 302)
+	);
+
+	expect(response.status).toBe(302);
+	expect(response.headers.get("Location")).toBe("https://example.com/login");
+	expect(response.headers.get("Vary")).toBe("Cookie");
+});
+
+test("preserves non-Response results from resolve with cookie negotiation", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "fr"] },
+		}),
+		strategy: ["cookie", "baseLocale"],
+	});
+	const result = { handled: true };
+	expect(
+		await runtime.paraglideMiddleware(
+			new Request("https://example.com/page"),
+			() => result
+		)
+	).toBe(result);
 });
 
 test("does not call onRedirect callback when there is no redirecting", async () => {

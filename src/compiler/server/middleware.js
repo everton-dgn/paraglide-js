@@ -111,6 +111,7 @@ export async function paraglideMiddleware(request, resolve, options) {
 	}
 
 	const strategy = runtime.getStrategyForUrl(url.href);
+	const vary = getVaryFields(strategy);
 	const decision = await runtime.shouldRedirect({
 		request,
 		effectiveRequestUrl: url,
@@ -124,11 +125,10 @@ export async function paraglideMiddleware(request, resolve, options) {
 		decision.shouldRedirect &&
 		decision.redirectUrl
 	) {
-		// Create headers object with Vary header if preferredLanguage strategy is used
 		/** @type {Record<string, string>} */
 		const headers = {};
-		if (strategy.includes("preferredLanguage")) {
-			headers["Vary"] = "Accept-Language";
+		if (vary.length > 0) {
+			headers["Vary"] = vary.join(", ");
 		}
 
 		const response = new Response(null, {
@@ -160,10 +160,19 @@ export async function paraglideMiddleware(request, resolve, options) {
 	/** @type {Set<string>} */
 	const messageCalls = new Set();
 
-	const response = await requestAsyncLocalStorage?.run(
+	let response = await requestAsyncLocalStorage?.run(
 		{ locale, origin, messageCalls },
 		() => resolve({ locale, request: newRequest })
 	);
+
+	if (vary.length > 0 && response instanceof Response) {
+		const urlIndex = strategy.indexOf("url");
+		const responseVary =
+			urlIndex !== -1 && runtime.extractLocaleFromUrl(url)
+				? getVaryFields(strategy.slice(0, urlIndex))
+				: vary;
+		response = withVary(response, responseVary);
+	}
 
 	// Only modify HTML responses
 	if (
@@ -226,6 +235,51 @@ export async function paraglideMiddleware(request, resolve, options) {
 	}
 
 	return response;
+}
+
+/**
+ * @param {string[]} strategy
+ * @returns {string[]}
+ */
+function getVaryFields(strategy) {
+	/** @type {string[]} */
+	const vary = [];
+	if (strategy.includes("cookie")) vary.push("Cookie");
+	if (strategy.includes("preferredLanguage")) vary.push("Accept-Language");
+	return vary;
+}
+
+/**
+ * @param {Response} response
+ * @param {string[]} vary
+ * @returns {Response}
+ */
+function withVary(response, vary) {
+	// Network errors and protocol upgrades are not ordinary HTTP responses.
+	if (response.status < 200 || response.status > 599) return response;
+	const existing = response.headers.get("Vary");
+	const fields =
+		existing?.split(",").map((field) => field.trim().toLowerCase()) ?? [];
+	if (fields.includes("*")) return response;
+	const missing = vary.filter((field) => !fields.includes(field.toLowerCase()));
+	if (missing.length === 0) return response;
+	const value = [existing, ...missing].filter(Boolean).join(", ");
+
+	try {
+		response.headers.set("Vary", value);
+		return response;
+	} catch (error) {
+		if (!(error instanceof TypeError)) throw error;
+	}
+
+	// Responses from fetch() or Response.redirect() can have immutable headers.
+	const headers = new Headers(response.headers);
+	headers.set("Vary", value);
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
 }
 
 /**
