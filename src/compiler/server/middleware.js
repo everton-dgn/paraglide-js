@@ -12,13 +12,13 @@ import * as runtime from "./runtime.js";
  * This middleware performs several key functions:
  *
  * 1. Determines the locale for the incoming request using configured strategies
- * 2. Handles URL localization and redirects (only for document requests)
+ * 2. Handles URL localization and redirects (only for document requests by default)
  * 3. Maintains locale state using AsyncLocalStorage to prevent request interference
  *
  * When URL strategy is used:
  *
  * - The locale is extracted from the URL for all request types
- * - If URL doesn't match the determined locale, redirects to localized URL (only for document requests)
+ * - If URL doesn't match the determined locale, redirects to localized URL (only for document requests by default)
  * - De-localizes URLs before passing to server (e.g., `/fr/about` → `/about`)
  *
  * @see https://paraglidejs.com/middleware
@@ -33,8 +33,13 @@ import * as runtime from "./runtime.js";
  *   - `locale`: The determined locale for this request.
  * @param {{
  *   effectiveRequestUrl?: string | URL | ((request: Request) => string | URL),
+ *   redirect?: "document" | "navigation",
  *   onRedirect?: (response: Response) => void
  * }} [options] - Options to control middleware behavior. `effectiveRequestUrl` sets the effective request URL used for route matching, URL-based locale detection, redirects, and `getUrlOrigin()`.
+ *   `redirect` defaults to `"document"`, which requires `Sec-Fetch-Dest: document`.
+ *   Unrecognized values keep that default behavior.
+ *   `"navigation"` only redirects GET/HEAD requests, accepting either that destination
+ *   or an absent destination with an explicit `Accept` header that allows `text/html`.
  * @returns {Promise<Response>}
  *
  * @example
@@ -116,18 +121,33 @@ export async function paraglideMiddleware(request, resolve, options) {
 		effectiveRequestUrl: url,
 	});
 	const locale = decision.locale;
+	// Custom server strategies run before built-in strategies, regardless of order.
+	const urlDecidesLocale =
+		options?.redirect === "navigation" &&
+		strategy[0] === "url" &&
+		!strategy.some((strat) => strat.startsWith("custom-")) &&
+		runtime.extractLocaleFromUrl(url) !== undefined;
+	const navigationVary = [
+		...(!urlDecidesLocale && strategy.includes("preferredLanguage")
+			? ["Accept-Language"]
+			: []),
+		...(!urlDecidesLocale && strategy.includes("cookie") ? ["Cookie"] : []),
+		"Accept",
+		"Sec-Fetch-Dest",
+	];
 
 	// if the client makes a request to a URL that doesn't match
 	// the localizedUrl, redirect the client to the localized URL
 	if (
-		request.headers.get("Sec-Fetch-Dest") === "document" &&
+		shouldRedirectRequest(request, options?.redirect) &&
 		decision.shouldRedirect &&
 		decision.redirectUrl
 	) {
-		// Create headers object with Vary header if preferredLanguage strategy is used
 		/** @type {Record<string, string>} */
 		const headers = {};
-		if (strategy.includes("preferredLanguage")) {
+		if (options?.redirect === "navigation") {
+			headers["Vary"] = navigationVary.join(", ");
+		} else if (strategy.includes("preferredLanguage")) {
 			headers["Vary"] = "Accept-Language";
 		}
 
@@ -160,10 +180,49 @@ export async function paraglideMiddleware(request, resolve, options) {
 	/** @type {Set<string>} */
 	const messageCalls = new Set();
 
-	const response = await requestAsyncLocalStorage?.run(
+	let response = await requestAsyncLocalStorage?.run(
 		{ locale, origin, messageCalls },
 		() => resolve({ locale, request: newRequest })
 	);
+
+	// A cached callback response must not hide a redirect for different request headers.
+	if (
+		options?.redirect === "navigation" &&
+		(request.method === "GET" || request.method === "HEAD") &&
+		strategy.includes("url") &&
+		(!urlDecidesLocale || decision.shouldRedirect) &&
+		response instanceof Response &&
+		response.status >= 200 &&
+		response.status <= 599
+	) {
+		const headers = new Headers(response.headers);
+		const vary =
+			headers
+				.get("Vary")
+				?.split(",")
+				.map((field) => field.trim())
+				.filter(Boolean) ?? [];
+		if (!vary.includes("*")) {
+			const missing = navigationVary.filter(
+				(field) =>
+					!vary.some(
+						(existing) => existing.toLowerCase() === field.toLowerCase()
+					)
+			);
+			if (missing.length > 0) {
+				headers.set("Vary", [...vary, ...missing].join(", "));
+				try {
+					response = new Response(response.body, {
+						status: response.status,
+						statusText: response.statusText,
+						headers,
+					});
+				} catch {
+					// Keep the callback response if its body cannot be reused.
+				}
+			}
+		}
+	}
 
 	// Only modify HTML responses
 	if (
@@ -226,6 +285,76 @@ export async function paraglideMiddleware(request, resolve, options) {
 	}
 
 	return response;
+}
+
+/**
+ * @param {Request} request
+ * @param {"document" | "navigation"} [redirect]
+ * @returns {boolean}
+ */
+function shouldRedirectRequest(request, redirect) {
+	const destination = request.headers.get("Sec-Fetch-Dest");
+	if (redirect !== "navigation") return destination === "document";
+	if (request.method !== "GET" && request.method !== "HEAD") return false;
+	if (destination !== null) return destination === "document";
+
+	let specificity = -1;
+	let quality = 0;
+	for (const range of splitHeaderValue(
+		request.headers.get("Accept") ?? "",
+		","
+	)) {
+		const [type, ...parameters] = splitHeaderValue(range, ";").map((part) =>
+			part.trim().toLowerCase()
+		);
+		const rangeSpecificity =
+			type === "text/html"
+				? 2
+				: type === "text/*"
+					? 1
+					: type === "*/*"
+						? 0
+						: -1;
+		if (rangeSpecificity < 0 || rangeSpecificity < specificity) continue;
+
+		const weight = parameters.find((parameter) => /^q\s*=/.test(parameter));
+		const value = weight ? weight.slice(weight.indexOf("=") + 1).trim() : "1";
+		const rangeQuality = /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(value)
+			? Number(value)
+			: 0;
+		// A specific q=0 exclusion takes precedence over an acceptable wildcard.
+		quality =
+			rangeSpecificity > specificity
+				? rangeQuality
+				: Math.max(quality, rangeQuality);
+		specificity = rangeSpecificity;
+	}
+	return quality > 0;
+}
+
+/**
+ * @param {string} value
+ * @param {string} separator
+ * @returns {string[]}
+ */
+function splitHeaderValue(value, separator) {
+	const parts = [];
+	let start = 0;
+	let quoted = false;
+	for (let index = 0; index < value.length; index++) {
+		const character = value[index];
+		if (quoted && character === "\\") {
+			index++;
+		} else if (character === '"') {
+			quoted = !quoted;
+		} else if (!quoted && character === separator) {
+			parts.push(value.slice(start, index));
+			start = index + 1;
+		}
+	}
+	if (quoted) return [];
+	parts.push(value.slice(start));
+	return parts;
 }
 
 /**
