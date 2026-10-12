@@ -7,6 +7,8 @@ import {
 	cookieDomain,
 	cookieMaxAge,
 	cookieName,
+	cookieSameSite,
+	cookieSecure,
 	isServer,
 	localStorageKey,
 	experimentalStaticLocale,
@@ -110,10 +112,20 @@ export let setLocale = (newLocale, options) => {
 			}
 
 			// set the cookie
-			const cookieString = `${cookieName}=${newLocale}; path=/; max-age=${cookieMaxAge}`;
-			document.cookie = cookieDomain
-				? `${cookieString}; domain=${cookieDomain}`
-				: cookieString;
+			let cookieString = `${cookieName}=${newLocale}; path=/; max-age=${cookieMaxAge}`;
+			if (cookieDomain) {
+				cookieString += `; domain=${cookieDomain}`;
+			}
+			if (cookieSameSite) {
+				cookieString += `; samesite=${cookieSameSite}`;
+			}
+			if (
+				cookieSecure === true ||
+				(cookieSecure === "auto" && window.location?.protocol === "https:")
+			) {
+				cookieString += "; secure";
+			}
+			document.cookie = cookieString;
 			clearLocaleCookieCache();
 		} else if (strat === "baseLocale") {
 			// nothing to be set here. baseLocale is only a fallback
