@@ -41,11 +41,15 @@ const folder = path.join(
 	app === "drawdb" ? "src/i18n/locales" : "web/src/locales"
 );
 const catalogs = {};
+const originalCatalogs = {};
 const flatten = (obj, prefix = "", result = {}) => {
 	for (const [key, value] of Object.entries(obj)) {
 		const full = prefix ? `${prefix}.${key}` : key;
-		if (typeof value === "string") result[full] = value;
-		else if (value && !Array.isArray(value) && typeof value === "object")
+		if (typeof value === "string") {
+			if (Object.hasOwn(result, full))
+				throw Error(`Ambiguous catalog path ${full}`);
+			result[full] = value;
+		} else if (value && !Array.isArray(value) && typeof value === "object")
 			flatten(value, full, result);
 		else throw Error(`Unsupported catalog value ${full}`);
 	}
@@ -57,16 +61,21 @@ for (const filename of (await fs.readdir(folder)).sort()) {
 			pathToFileURL(path.join(folder, filename)).href
 		);
 		const resource = Object.values(module).find((x) => x?.translation);
-		if (resource)
-			catalogs[
+		if (resource) {
+			const locale =
 				{ "pt-br": "pt-BR", "zh-tw": "zh-TW", "pa-pk": "pa-PK", "sv-se": "sv" }[
 					filename.slice(0, -3)
-				] ?? filename.slice(0, -3)
-			] = flatten(resource.translation);
-	} else if (app === "memos" && filename.endsWith(".json"))
-		catalogs[filename.slice(0, -5)] = flatten(
-			JSON.parse(await fs.readFile(path.join(folder, filename), "utf8"))
+				] ?? filename.slice(0, -3);
+			originalCatalogs[locale] = resource.translation;
+			catalogs[locale] = flatten(resource.translation);
+		}
+	} else if (app === "memos" && filename.endsWith(".json")) {
+		const locale = filename.slice(0, -5);
+		originalCatalogs[locale] = JSON.parse(
+			await fs.readFile(path.join(folder, filename), "utf8")
 		);
+		catalogs[locale] = flatten(originalCatalogs[locale]);
+	}
 }
 const locales = Object.keys(catalogs);
 const keys = [
@@ -192,15 +201,35 @@ const inputs = Object.fromEntries(
 	bundles.flatMap((b) => b.declarations.map((d) => [d.name, "sample"]))
 );
 await fs.writeFile(path.join(root, "inputs.json"), JSON.stringify(inputs));
+// Keep the native resource hierarchy and source property order. Flattening
+// keys is only needed for the compiler adapter, not for the i18next payload.
+const includedSet = new Set(included);
+const nativeCatalog = (resource, prefix = "") =>
+	Object.fromEntries(
+		Object.entries(resource).flatMap(([key, value]) => {
+			const full = prefix ? `${prefix}.${key}` : key;
+			if (typeof value === "string")
+				return includedSet.has(full) ? [[key, value]] : [];
+			const child = nativeCatalog(value, full);
+			return Object.keys(child).length ? [[key, child]] : [];
+		})
+	);
+const nativeResources = Object.fromEntries(
+	locales.map((locale) => [
+		locale,
+		{ translation: nativeCatalog(originalCatalogs[locale]) },
+	])
+);
+const nativeResourceHash = createHash("sha256")
+	.update(JSON.stringify(nativeResources))
+	.digest("hex");
 const instance = i18next.createInstance();
 await instance.init({
 	lng: "en",
 	fallbackLng: "en",
 	initImmediate: false,
 	interpolation: { escapeValue: false },
-	resources: Object.fromEntries(
-		locales.map((locale) => [locale, { translation: catalogs[locale] }])
-	),
+	resources: nativeResources,
 });
 let parityChecks = 0;
 for (const locale of locales)
@@ -240,7 +269,7 @@ const pEntry = `import * as m from './paraglide/messages.js'; import {setLocale}
 await fs.writeFile(path.join(root, "paraglide-entry.js"), pEntry);
 await fs.writeFile(
 	path.join(root, "i18next-entry.js"),
-	`import i18next from ${JSON.stringify(i18nextPath)}; const resources=${JSON.stringify(Object.fromEntries(locales.map((locale) => [locale, { translation: Object.fromEntries(included.filter((k) => catalogs[locale][k] !== undefined).map((k) => [k, catalogs[locale][k]])) }])))}; await i18next.init({lng:'en',fallbackLng:'en',initImmediate:false,interpolation:{escapeValue:false},resources}); export const translate=(key,inputs)=>i18next.t(key,inputs); export const setLocale=locale=>i18next.changeLanguage(locale);`
+	`import i18next from ${JSON.stringify(i18nextPath)}; const resources=${JSON.stringify(nativeResources)}; await i18next.init({lng:'en',fallbackLng:'en',initImmediate:false,interpolation:{escapeValue:false},resources}); export const translate=(key,inputs)=>i18next.t(key,inputs); export const setLocale=locale=>i18next.changeLanguage(locale);`
 );
 const sizes = {};
 for (const library of ["paraglide", "i18next"]) {
@@ -314,6 +343,9 @@ const report = {
 	parityChecks,
 	switchChecks,
 	catalogHash,
+	nativeResourceHash,
+	nativeResourceStructure:
+		"source hierarchy and property order; excluded keys removed on both sides",
 	compilerArtifactHash,
 	scope:
 		"complete-catalog isolated JS; Memos is an all-locales stress workload, not its lazy production loading",

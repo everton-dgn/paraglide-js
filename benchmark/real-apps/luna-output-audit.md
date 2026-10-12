@@ -13,7 +13,7 @@ Static literal inlining is output-structure dependent. I ran the same complete D
 | `locale-modules`  | main      | 1,245,504 B | 298,846 B | 230,024 B |
 | `locale-modules`  | `bdb8f54` | 1,006,046 B | 310,518 B | 205,974 B |
 
-For `message-modules`, the change saves 19.2% raw, 25.9% gzip, and 18.0% Brotli. For `locale-modules`, it saves 19.2% raw and 10.5% Brotli, but gzip grows 3.9%. Against i18next's 1,067,257 raw / 257,006 gzip / 208,199 Brotli, the inline `message-modules` result is 5.7% smaller raw, 26.4% larger gzip, and effectively tied in Brotli (+0.2%). In `locale-modules`, it is 20.8% larger by gzip and 1.1% smaller by Brotli.
+For `message-modules`, the change saves 19.2% raw, 25.9% gzip, and 18.0% Brotli. For `locale-modules`, it saves 19.2% raw and 10.5% Brotli, but gzip grows 3.9%. Against i18next's 1,067,257 raw / 258,253 gzip / 208,875 Brotli, the inline `message-modules` result is 5.7% smaller raw, 25.8% larger gzip, and effectively tied in Brotli (−0.1%). In `locale-modules`, it is 20.2% larger by gzip and 1.4% smaller by Brotli.
 
 The isolated-bundle discrepancy follows the emitted layout. In `message-modules`, each static message still has a dispatcher with a branch per locale; the optimization removes helper calls and helper bodies, but it does not turn the repeated locale branches into a shared lookup. In `locale-modules`, translations are grouped by locale, which gives gzip better local repetition before this change. Vite already minifies both layouts; changing source formatting alone is not the opportunity. A compiler data-layout change can alter which repeated bytes are adjacent to each other.
 
@@ -45,3 +45,5 @@ The `bdb8f54` focused tests pass in a detached worktree: `compile-bundle`, `comp
 The AX files are task simulations and generated-output probes, not user studies. They show that a local task runner could understand how to regenerate and call the messages, and that the tested functions returned equal strings. They do not show that teams want to migrate from i18next, that migration is easier in practice, or that users prefer either library. Do not use them to support migration-desire or accessibility claims.
 
 The i18next adapters are bounded benchmark scaffolding. DrawDB supports its current simple interpolation and an explicit map for computed menu keys; it does not implement the full i18next API. The Memos run excludes two plural keys on both sides and keeps all locales reachable despite production's lazy loading. No result here establishes general migration parity or an app-wide performance guarantee.
+
+The isolated native comparator was subsequently corrected to retain each catalog's source hierarchy and key order. Native comparison values above reflect that correction; Paraglide-before/after and actual whole-app measurements are unchanged.

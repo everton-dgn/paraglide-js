@@ -2,7 +2,7 @@
 
 These experiments run real catalog text through Paraglide's compiler and **Vite 8 production minification and tree shaking**, then check translation equality and count emitted JavaScript bytes after gzip/Brotli compression. Source-code shortening that Vite already performs does not count as an improvement.
 
-The complete-catalog workload deliberately keeps every key reachable, so it measures isolated localization JS rather than a production page. DrawDB embeds all locales in production. Memos dynamically loads locales: its all-locales workload is a stress test, not an initial-page comparison. The runner fails closed on unsupported syntax; it excludes two plural keys from Memos on both sides. This adapter is benchmark scaffolding, not a supported i18next migration tool.
+The complete-catalog workload deliberately keeps every key reachable, so it measures isolated localization JS rather than a production page. DrawDB embeds all locales in production. Memos dynamically loads locales: its all-locales workload is a stress test, not an initial-page comparison. The native comparator preserves source catalog hierarchy and property order; flattened paths are used only to build compiler messages. The runner fails closed on unsupported syntax; it excludes two plural keys from Memos on both sides. This adapter is benchmark scaffolding, not a supported i18next migration tool.
 
 ## Reproduce
 

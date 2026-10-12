@@ -15,7 +15,7 @@ The checked-in results use Vite 8.1.4 production minification and report determi
 | DrawDB, 51 locales / 364 keys         |   438,209 → 324,783 B (−25.9%) | 254,236 → 208,589 B (−18.0%) |
 | Memos, 46 locales / 911 included keys | 1,018,312 → 765,287 B (−24.9%) | 592,485 → 483,414 B (−18.4%) |
 
-The results support a greater-than-10% reduction in compressed localization bytes versus the previous Paraglide output for these complete-catalog fixtures. They do not show the same margin versus i18next: inline DrawDB remains 26.4% larger by gzip and 0.2% larger by Brotli; inline Memos is 3.6% smaller by gzip and 1.0% smaller by Brotli. Memos excludes two unsupported plural keys symmetrically.
+The results support a greater-than-10% reduction in compressed localization bytes versus the previous Paraglide output for these complete-catalog fixtures. They do not show the same margin versus i18next: after correcting the native comparator to preserve source hierarchy and key order, inline DrawDB remains 25.8% larger by gzip and effectively tied in Brotli (0.1% smaller); inline Memos is 1.1% larger by gzip and 2.1% larger by Brotli. Memos excludes two unsupported plural keys symmetrically.
 
 The runner verifies every included key with explicit locales and checks selected-locale output after `setLocale()` transitions: 18,564 parity checks and 2,184 switch checks for DrawDB; 41,906 and 7,288 for Memos. The full-catalog fixture deliberately reaches every key; Memos also loads locales lazily in production. These are isolated minified localization bundles, so they do not establish a route-specific production payload or a page-load/LCP improvement. The committed result JSON contains byte counts, not browser timing results.
 
