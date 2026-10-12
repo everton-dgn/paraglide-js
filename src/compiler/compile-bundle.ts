@@ -30,6 +30,8 @@ export type CompiledBundleWithMessages = {
 	matchTypes: InputMatchTypes;
 	/** Shared typedef name for bundle input types used across emitted JSDoc */
 	inputTypeAliasName?: string;
+	/** Compiled message helpers with no emitted reference in message-modules. */
+	unreferencedMessageLocales?: string[];
 };
 
 /**
@@ -65,12 +67,23 @@ export const compileBundle = (args: {
 		// set the pattern for the language tag
 		compiledMessages[message.locale] = compiledMessage;
 	}
+	const inlinePlainTextByLocale =
+		args.experimentalStaticLocale === perLocaleBuildStaticLocaleExpression
+			? undefined
+			: findPlainTextMessages(args.bundle);
+	const unreferencedMessageLocales = findUnreferencedMessageLocales({
+		inlinePlainTextByLocale: inlinePlainTextByLocale ?? Object.create(null),
+		compiledMessages,
+		fallbackMap: args.fallbackMap,
+		hasMarkup,
+	});
 
 	return {
 		bundle: compileBundleFunction({
 			bundle: args.bundle,
 			availableLocales: Object.keys(args.fallbackMap),
 			messageReferenceExpression: args.messageReferenceExpression,
+			inlinePlainTextByLocale,
 			settings: args.settings,
 			matchTypes,
 			hasMarkup,
@@ -82,8 +95,66 @@ export const compileBundle = (args: {
 		messages: compiledMessages,
 		matchTypes,
 		inputTypeAliasName,
+		unreferencedMessageLocales,
 	};
 };
+
+/**
+ * Finds one-variant messages whose pattern is entirely static text. Their
+ * dispatcher branch can return the string directly without retaining a
+ * locale message function in the client bundle.
+ */
+function findPlainTextMessages(bundle: BundleNested): Record<string, string> {
+	const result = Object.create(null) as Record<string, string>;
+
+	for (const message of bundle.messages) {
+		if (message.variants.length !== 1) continue;
+		const variant = message.variants[0];
+		if (!variant || !variant.pattern.every((part) => part.type === "text")) {
+			continue;
+		}
+
+		// compilePattern emits static text inside a template literal, whose
+		// cooked value normalizes CR and CRLF line endings to LF.
+		result[message.locale] = variant.pattern
+			.map((part) => (part.type === "text" ? part.value : ""))
+			.join("")
+			.replace(/\r\n?/g, "\n");
+	}
+
+	return result;
+}
+
+function findUnreferencedMessageLocales(args: {
+	inlinePlainTextByLocale: Record<string, string>;
+	compiledMessages: Record<string, CompiledMessage>;
+	fallbackMap: Record<string, string | undefined>;
+	hasMarkup: boolean;
+}): string[] {
+	if (args.hasMarkup) return [];
+
+	// Missing-locale aliases still call the first available compiled fallback
+	// function, even when the dispatcher's own branch uses an inline string.
+	const fallbackTargets = new Set<string>();
+	for (const locale of Object.keys(args.fallbackMap)) {
+		if (Object.hasOwn(args.compiledMessages, locale)) continue;
+
+		let fallbackLocale = args.fallbackMap[locale];
+		const visited = new Set([locale]);
+		while (fallbackLocale && !visited.has(fallbackLocale)) {
+			visited.add(fallbackLocale);
+			if (Object.hasOwn(args.compiledMessages, fallbackLocale)) {
+				fallbackTargets.add(fallbackLocale);
+				break;
+			}
+			fallbackLocale = args.fallbackMap[fallbackLocale];
+		}
+	}
+
+	return Object.keys(args.inlinePlainTextByLocale).filter(
+		(locale) => !fallbackTargets.has(locale)
+	);
+}
 
 const compileBundleFunction = (args: {
 	/**
@@ -98,6 +169,8 @@ const compileBundleFunction = (args: {
 	 * The message reference expression
 	 */
 	messageReferenceExpression: (locale: string, bundleId: string) => string;
+	/** Static text messages that can be returned directly from the dispatcher. */
+	inlinePlainTextByLocale?: Record<string, string>;
 	/**
 	 * The project settings
 	 */
@@ -142,6 +215,9 @@ const compileBundleFunction = (args: {
 					baseLocale,
 				]
 			: args.availableLocales;
+	const allStringBranchesInline = dispatchLocales.every(
+		(locale) => args.inlinePlainTextByLocale?.[locale] !== undefined
+	);
 
 	const inputType = args.inputTypeAliasName;
 	const localesUnion =
@@ -172,6 +248,10 @@ const compileBundleFunction = (args: {
 				);
 
 				if (mode === "string") {
+					const inlineText = args.inlinePlainTextByLocale?.[locale];
+					if (inlineText !== undefined) {
+						return `${prefix}${condition}return /** @type {LocalizedString} */ (${JSON.stringify(inlineText)})`;
+					}
 					return `${prefix}${condition}return ${messageRef}(inputs)`;
 				}
 
@@ -244,6 +324,10 @@ ${englishMatchTableDoc}${jsDocBundleFunctionTypes({
 			indent
 		)}`;
 	};
+	const keepUnusedInputsParameter = (indent: string): string =>
+		allStringBranchesInline && !args.experimentalMiddlewareLocaleSplitting
+			? `\n${indent}void inputs;`
+			: "";
 
 	let code = "";
 
@@ -251,7 +335,7 @@ ${englishMatchTableDoc}${jsDocBundleFunctionTypes({
 		code = `${commonJsDoc}
 ${isSafeBundleId ? "export " : ""}const ${safeBundleId} = /** @type {(${bundleFunctionType}) & ${messageMetadataType}} */ ((inputs${hasInputs ? "" : " = {}"}, options = {}) => {${clientMiddlewareGuard(
 			"\t"
-		)}
+		)}${keepUnusedInputsParameter("\t")}
 ${localeResolutionStatement("\t")}
 	${compileLocaleReturnStatements("string", "\t")}${
 		!isFullyTranslated
@@ -265,7 +349,7 @@ ${isSafeBundleId ? "export " : ""}const ${safeBundleId} = /** @type {(${bundleFu
 	/* @__PURE__ */ Object.assign(
 		/** @type {${bundleFunctionType}} */ ((inputs${hasInputs ? "" : " = {}"}, options = {}) => {${clientMiddlewareGuard(
 			"\t\t\t"
-		)}
+		)}${keepUnusedInputsParameter("\t\t\t")}
 ${localeResolutionStatement("\t\t\t")}
 			${compileLocaleReturnStatements("string", "\t\t\t")}${
 				!isFullyTranslated
