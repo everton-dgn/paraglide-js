@@ -42,6 +42,8 @@ export const compileBundle = (args: {
 	fallbackMap: Record<string, string | undefined>;
 	messageReferenceExpression: (locale: string, bundleId: string) => string;
 	settings?: ProjectSettings;
+	/** Internal layout control; locale modules keep text grouped by language. */
+	inlineMessages?: boolean;
 	experimentalMiddlewareLocaleSplitting?: boolean;
 	experimentalStaticLocale?: CompilerOptions["experimentalStaticLocale"];
 }): CompiledBundleWithMessages => {
@@ -68,6 +70,7 @@ export const compileBundle = (args: {
 		compiledMessages[message.locale] = compiledMessage;
 	}
 	const inlinePlainTextByLocale =
+		args.inlineMessages !== true ||
 		args.experimentalStaticLocale === perLocaleBuildStaticLocaleExpression
 			? undefined
 			: findPlainTextMessages(args.bundle);

@@ -27,7 +27,12 @@ const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
 }).trim();
 const load = (file) => import(pathToFileURL(path.resolve(compiler, file)).href);
 const { compileBundle } = await load("compiler/compile-bundle.js");
-const output = await load("compiler/output-structure/message-modules.js");
+const outputStructure =
+	process.env.PARAGLIDE_OUTPUT_STRUCTURE ?? "message-modules";
+if (!["message-modules", "locale-modules"].includes(outputStructure)) {
+	throw Error(`Unknown output structure: ${outputStructure}`);
+}
+const output = await load(`compiler/output-structure/${outputStructure}.js`);
 const { createRuntimeFile } = await load("compiler/runtime/create-runtime.js");
 const { defaultCompilerOptions } = await load("compiler/compiler-options.js");
 const { createRegistry } = await load("compiler/registry.js");
@@ -150,6 +155,7 @@ const compiled = bundles.map((bundle) =>
 		bundle,
 		fallbackMap,
 		settings,
+		inlineMessages: outputStructure === "message-modules",
 		messageReferenceExpression: output.messageReferenceExpression,
 	})
 );
@@ -289,6 +295,7 @@ for (let round = 0; round < 11; round++)
 const report = {
 	app,
 	label,
+	outputStructure,
 	checkout,
 	sourceCommit,
 	i18nextVersion,

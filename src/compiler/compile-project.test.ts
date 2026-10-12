@@ -46,6 +46,43 @@ function hasFallbackCycle(
 	return false;
 }
 
+test("locale-modules retain language-grouped static text helpers", async () => {
+	const project = await loadProjectInMemory({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "de"] },
+		}),
+	});
+	await insertBundleNested(
+		project.db,
+		createBundleNested({
+			id: "literal_layout",
+			declarations: [],
+			messages: ["en", "de"].map((locale) => ({
+				locale,
+				variants: [
+					{
+						pattern: [
+							{ type: "text" as const, value: `layout text ${locale}` },
+						],
+					},
+				],
+			})),
+		})
+	);
+	const output = await compileProject({
+		project,
+		compilerOptions: { outputStructure: "locale-modules" },
+	});
+	expect(output["messages/_index.js"]).toContain(
+		"return __de.literal_layout(inputs)"
+	);
+	expect(output["messages/_index.js"]).not.toContain(
+		'return /** @type {LocalizedString} */ ("layout text de")'
+	);
+	expect(output["messages/de.js"]).toContain("export const literal_layout =");
+	await project.close();
+});
+
 test("emitGitignore", async () => {
 	const project = await loadProjectInMemory({
 		blob: await newProject({

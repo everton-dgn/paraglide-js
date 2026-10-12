@@ -58,6 +58,7 @@ test("compiles to jsdoc", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			en: "en",
 			"en-US": "en",
@@ -113,6 +114,7 @@ test("uses the base locale as the exhaustive locale branch", () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			fr: "en",
 			de: "en",
@@ -147,6 +149,7 @@ test("inlines static text with safe escaping and preserves missing-locale fallba
 		{ type: "input-variable", name: "unused" },
 	]);
 	const result = compileBundle({
+		inlineMessages: true,
 		bundle,
 		fallbackMap: { en: undefined, de: "en", fr: "en" },
 		messageReferenceExpression: (locale, bundleId) =>
@@ -241,6 +244,7 @@ test("leaves markup and multi-variant messages on their message functions", () =
 		],
 	};
 	const markupResult = compileBundle({
+		inlineMessages: true,
 		bundle: markupBundle,
 		fallbackMap: { en: undefined },
 		messageReferenceExpression: (locale) => `${locale}_notice`,
@@ -276,6 +280,7 @@ test("leaves markup and multi-variant messages on their message functions", () =
 		})),
 	};
 	const multiVariantResult = compileBundle({
+		inlineMessages: true,
 		bundle: multiVariantBundle,
 		fallbackMap: { en: undefined, de: "en" },
 		messageReferenceExpression: (locale) => `${locale}_item_count`,
@@ -295,6 +300,7 @@ test("keeps static text message references in a per-locale build", () => {
 		de: "Hallo",
 	});
 	const result = compileBundle({
+		inlineMessages: true,
 		bundle,
 		fallbackMap: { en: undefined, de: "en" },
 		messageReferenceExpression: (locale) => `${locale}_greeting`,
@@ -313,6 +319,7 @@ test("marks an unused input parameter as used when every branch is inlined", () 
 		{ type: "input-variable", name: "unused" },
 	]);
 	const result = compileBundle({
+		inlineMessages: true,
 		bundle,
 		fallbackMap: { en: undefined },
 		messageReferenceExpression: (locale) => `${locale}_greeting`,
@@ -328,6 +335,7 @@ test("marks an unused input parameter as used when every branch is inlined", () 
 test("does not treat inherited object properties as inline locale messages", () => {
 	const bundle = createPlainTextBundle("greeting", { en: "Hello" });
 	const result = compileBundle({
+		inlineMessages: true,
 		bundle,
 		fallbackMap: { en: undefined, toString: "en", constructor: "en" },
 		messageReferenceExpression: (locale) =>
@@ -367,6 +375,7 @@ test("emits middleware locale splitting hooks when enabled", () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: { en: "en" },
 		bundle: mockBundle,
 		messageReferenceExpression: (locale) =>
@@ -425,6 +434,7 @@ test("emits the per-locale build marker inside the message function", () => {
 	};
 	const expression = perLocaleBuildStaticLocaleExpression;
 	const result = compileBundle({
+		inlineMessages: true,
 		bundle: mockBundle,
 		fallbackMap: { en: undefined, de: "en" },
 		messageReferenceExpression: (locale) => `${locale}_greeting`,
@@ -470,6 +480,7 @@ test("compiles to jsdoc with missing translation", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			en: "en",
 			"en-US": "en",
@@ -533,6 +544,7 @@ test("compiles bundles with arbitrary module identifiers", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {},
 		bundle: mockBundle,
 		messageReferenceExpression: (locale) =>
@@ -590,6 +602,7 @@ test("handles message pattern with duplicate variable references", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			en: "en",
 		},
@@ -653,6 +666,7 @@ test("adds .parts() to bundle functions when markup exists", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			en: undefined,
 		},
@@ -692,5 +706,18 @@ ${result.bundle.code}
 	]);
 	expect(result.bundle.code).toContain(
 		'MessageMetadata<NoticeInputs, { locale?: "en" }, { strong: { options: {}; attributes: {}; children: true } }>'
+	);
+});
+
+test("low-level compilation preserves references without a layout opt-in", () => {
+	const result = compileBundle({
+		bundle: createPlainTextBundle("plain", { en: "Hello", de: "Hallo" }),
+		fallbackMap: { en: undefined, de: "en" },
+		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
+		messageReferenceExpression: (locale) => `${locale}_plain`,
+	});
+	expect(result.bundle.code).toContain("return de_plain(inputs)");
+	expect(result.bundle.code).not.toContain(
+		'return /** @type {LocalizedString} */ ("Hallo")'
 	);
 });
