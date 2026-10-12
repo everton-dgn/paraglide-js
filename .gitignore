@@ -19,5 +19,3 @@ tsconfig.tsbuildinfo
 artifact/
 
 website/.lighthouse*/
-
-.real-apps/
