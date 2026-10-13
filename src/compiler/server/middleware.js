@@ -122,6 +122,15 @@ export async function paraglideMiddleware(request, resolve, options) {
 		effectiveRequestUrl: url,
 	});
 	const locale = decision.locale;
+	// Custom server strategies run before built-in strategies, regardless of order.
+	const hasCustomStrategy = strategy.some((strat) =>
+		strat.startsWith("custom-")
+	);
+	const urlDecidesLocale =
+		options?.redirect === "navigation" &&
+		strategy[0] === "url" &&
+		!hasCustomStrategy &&
+		runtime.extractLocaleFromUrl(url) !== undefined;
 	const navigationVary =
 		options?.redirect === "navigation" ? ["Accept", "Sec-Fetch-Dest"] : [];
 
@@ -134,7 +143,7 @@ export async function paraglideMiddleware(request, resolve, options) {
 	) {
 		/** @type {Record<string, string>} */
 		const headers = {};
-		const redirectVary = [...vary, ...navigationVary];
+		const redirectVary = [...(urlDecidesLocale ? [] : vary), ...navigationVary];
 		if (redirectVary.length > 0) {
 			headers["Vary"] = redirectVary.join(", ");
 		}
@@ -176,13 +185,14 @@ export async function paraglideMiddleware(request, resolve, options) {
 	if (response instanceof Response) {
 		const urlIndex = strategy.indexOf("url");
 		const responseVary =
-			urlIndex !== -1 && runtime.extractLocaleFromUrl(url)
+			urlIndex !== -1 && !hasCustomStrategy && runtime.extractLocaleFromUrl(url)
 				? getVaryFields(strategy.slice(0, urlIndex))
-				: vary;
+				: [...vary];
 		// Classifying navigations can change a cached 200 into a redirect.
 		if (
 			(request.method === "GET" || request.method === "HEAD") &&
-			urlIndex !== -1
+			urlIndex !== -1 &&
+			(!urlDecidesLocale || decision.shouldRedirect)
 		) {
 			responseVary.push(...navigationVary);
 		}

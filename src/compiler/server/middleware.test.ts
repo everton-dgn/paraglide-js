@@ -1472,7 +1472,7 @@ test("only redirects if the request.headers.get('Sec-Fetch-Dest') === 'document'
 
 describe("navigation redirects", () => {
 	test.each([
-		["/fr/page", "fr", "Accept, Sec-Fetch-Dest"],
+		["/fr/page", "fr", null],
 		["/page", "en", "Cookie, Accept-Language, Accept, Sec-Fetch-Dest"],
 	])(
 		"varies navigation responses according to URL resolution for %s",
@@ -1783,6 +1783,113 @@ describe("navigation redirects", () => {
 		}
 	});
 });
+
+test.each([
+	["/fr/about", "application/json", false, "en", 200],
+	["/fr/about", "text/html", false, "en", 200],
+	["/fr/about/", "application/json", false, "en", 200],
+	["/fr/about/", "text/html", false, "en", 307],
+	["/fr/about", "text/html", true, "fr", 200],
+	["/fr/about", "text/html", true, "en", 307],
+] as const)(
+	"navigation cache for %s with Accept %s, custom strategy=%s and preference=%s",
+	async (path, accept, custom, preference, status) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
+			}),
+			strategy: [
+				"url",
+				"cookie",
+				"preferredLanguage",
+				"baseLocale",
+				...(custom ? ["custom-header" as const] : []),
+			],
+			trailingSlash: "never",
+		});
+		if (custom)
+			runtime.defineCustomServerStrategy("custom-header", {
+				getLocale: (request) =>
+					request?.headers.get("Accept-Language") ?? undefined,
+			});
+		for (const method of ["GET", "HEAD"]) {
+			const downstream = new Response(method === "HEAD" ? null : "ok", {
+				headers: {
+					Vary: "Accept-Encoding",
+					"Cache-Control": "public, max-age=600",
+				},
+			});
+			const response = await runtime.paraglideMiddleware(
+				new Request("http://internal.example.com/about", {
+					method,
+					headers: {
+						Accept: accept,
+						Cookie: "PARAGLIDE_LOCALE=en",
+						"Accept-Language": preference,
+					},
+				}),
+				() => downstream,
+				{
+					redirect: "navigation",
+					effectiveRequestUrl: `https://example.com${path}`,
+				}
+			);
+			expect(response.status).toBe(status);
+			expect(response.headers.get("Location")).toBe(
+				status === 307
+					? `https://example.com${custom ? "/about" : "/fr/about"}`
+					: null
+			);
+			const fields = custom
+				? "Cookie, Accept-Language, Accept, Sec-Fetch-Dest"
+				: "Accept, Sec-Fetch-Dest";
+			const needsVary = custom || path.endsWith("/");
+			expect(response.headers.get("Vary")).toBe(
+				status === 307
+					? fields
+					: needsVary
+						? `Accept-Encoding, ${fields}`
+						: "Accept-Encoding"
+			);
+			if (!needsVary) expect(response).toBe(downstream);
+			if (status === 200) {
+				expect(response.headers.get("Cache-Control")).toBe(
+					"public, max-age=600"
+				);
+				expect(await response.text()).toBe(method === "HEAD" ? "" : "ok");
+			}
+		}
+	}
+);
+
+test.each(["document", "navigation"] as const)(
+	"custom server strategies retain preference Vary in %s mode",
+	async (redirect) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
+			}),
+			strategy: ["url", "cookie", "preferredLanguage", "custom-header"],
+		});
+		runtime.defineCustomServerStrategy("custom-header", {
+			getLocale: (request) =>
+				request?.headers.get("Accept-Language") ?? undefined,
+		});
+		const response = await runtime.paraglideMiddleware(
+			new Request("https://example.com/fr/page", {
+				headers: { Accept: "application/json", "Accept-Language": "en" },
+			}),
+			({ locale }) => new Response(locale),
+			{ redirect }
+		);
+		expect(await response.text()).toBe("en");
+		expect(response.headers.get("Vary")).toBe(
+			redirect === "navigation"
+				? "Cookie, Accept-Language, Accept, Sec-Fetch-Dest"
+				: "Cookie, Accept-Language"
+		);
+	}
+);
 
 // https://github.com/opral/inlang-paraglide-js/issues/477
 test("does not catch errors thrown by downstream resolve call", async () => {
