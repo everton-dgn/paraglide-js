@@ -201,15 +201,19 @@ export async function paraglideMiddleware(request, resolve, options) {
 					)
 			);
 			if (missing.length > 0) {
-				headers.set("Vary", [...vary, ...missing].join(", "));
+				const value = [...vary, ...missing].join(", ");
 				try {
-					response = new Response(response.body, {
-						status: response.status,
-						statusText: response.statusText,
-						headers,
-					});
+					// Keep the response's identity and runtime-specific body encoding state.
+					response.headers.set("Vary", value);
 				} catch {
-					// Keep the callback response if its body cannot be reused.
+					try {
+						// Passing the original response as init preserves Workers encoding state.
+						const writable = new Response(response.body, response);
+						writable.headers.set("Vary", value);
+						response = writable;
+					} catch {
+						// Keep the callback response if its body cannot be reused.
+					}
 				}
 			}
 		}

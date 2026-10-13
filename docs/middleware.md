@@ -271,7 +271,7 @@ With this option, a client that accepts HTML can reach the localized URL instead
 
 GET/HEAD routes using the URL strategy vary redirects and callback responses by `Accept` and `Sec-Fetch-Dest`, plus `Accept-Language` or `Cookie` when those strategies are enabled. This separates cached 200 and 307 responses. It also varies canonical pages whose locale comes from the URL, which can lower shared-cache hit rates. Existing `Vary` fields, including `*`, are preserved. The `onRedirect` callback runs only for middleware redirects.
 
-Callback `Response` objects are rebuilt when `Vary` fields are missing. Their status, headers and body are preserved, but subclass properties are not copied. Responses that cannot be rebuilt keep their existing headers. Integrations that handle responses outside the callback must set these fields themselves. Custom strategies must also account for any additional headers they read.
+When `Vary` fields are missing, mutable callback `Response` headers are updated in place, preserving response identity, subclass properties and runtime-specific state such as Cloudflare Workers body encoding. Responses with immutable headers are rebuilt using the original response as the constructor options; their status, headers and body are preserved, but subclass properties are not copied. Immutable responses that cannot be rebuilt keep their existing headers. Integrations that handle responses outside the callback must set these fields themselves. Custom strategies must also account for any additional headers they read.
 
 API clients sending `Accept: */*` also qualify. Keep the default mode or exclude API routes with `routeStrategies` if they should never redirect.
 

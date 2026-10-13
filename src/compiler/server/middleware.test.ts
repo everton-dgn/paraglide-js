@@ -1215,7 +1215,8 @@ describe("navigation redirects", () => {
 								"public, max-age=600"
 							);
 							expect(await response.text()).toBe(method === "HEAD" ? "" : "ok");
-							expect(downstream.headers.get("Vary")).toBe(previous);
+							expect(response).toBe(downstream);
+							expect(downstream.headers.get("Vary")).toBe(expected);
 						}
 					}
 				}
@@ -1223,7 +1224,36 @@ describe("navigation redirects", () => {
 		}
 	);
 
-	test("preserves callback returns that cannot be rebuilt", async () => {
+	test("preserves response identity and custom state when adding Vary", async () => {
+		class FrameworkResponse extends Response {
+			readonly context = { compression: "manual", framework: "example" };
+		}
+		const downstream = new FrameworkResponse("ok", {
+			status: 201,
+			statusText: "Created",
+			headers: { Vary: "Accept-Encoding", "X-Framework": "example" },
+		});
+		const response = await runtime.paraglideMiddleware(
+			new Request("https://example.com/about", {
+				headers: { Accept: "application/json" },
+			}),
+			() => downstream,
+			{ redirect: "navigation" }
+		);
+		expect(response).toBe(downstream);
+		expect(response).toBeInstanceOf(FrameworkResponse);
+		expect(downstream.context).toEqual({
+			compression: "manual",
+			framework: "example",
+		});
+		expect(response.status).toBe(201);
+		expect(response.statusText).toBe("Created");
+		expect(response.headers.get("X-Framework")).toBe("example");
+		expect(response.headers.get("Vary")).toBe(`Accept-Encoding, ${vary}`);
+		expect(await response.text()).toBe("ok");
+	});
+
+	test("preserves callback returns with unusable bodies", async () => {
 		const consumed = new Response("ok");
 		await consumed.text();
 		const locked = new Response("ok");
@@ -1242,6 +1272,25 @@ describe("navigation redirects", () => {
 		} finally {
 			reader.releaseLock();
 		}
+	});
+
+	test("preserves a fetched body when immutable headers require a replacement", async () => {
+		const downstream = await fetch("data:text/plain,ok");
+		expect(() => downstream.headers.set("Vary", "Accept")).toThrow();
+		const response = await runtime.paraglideMiddleware(
+			new Request("https://example.com/about", {
+				headers: { Accept: "application/json" },
+			}),
+			() => downstream,
+			{ redirect: "navigation" }
+		);
+		expect(response).not.toBe(downstream);
+		expect(response.status).toBe(downstream.status);
+		expect(response.statusText).toBe(downstream.statusText);
+		expect(response.headers.get("Content-Type")).toBe("text/plain");
+		expect(response.headers.get("Vary")).toBe(vary);
+		expect(downstream.headers.get("Vary")).toBeNull();
+		expect(await response.text()).toBe("ok");
 	});
 
 	test("varies immutable headers only on routes using URL strategy", async () => {
