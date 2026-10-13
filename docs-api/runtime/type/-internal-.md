@@ -519,7 +519,7 @@ https://paraglidejs.com/strategy#write-your-own-strategy
 
 > **deLocalizeHref**(`href`): `string`
 
-Defined in: [runtime/localize-href.js:110](https://github.com/opral/paraglide-js/tree/main/src/compiler/runtime/localize-href.js)
+Defined in: [runtime/localize-href.js:127](https://github.com/opral/paraglide-js/tree/main/src/compiler/runtime/localize-href.js)
 
 High-level URL de-localization function optimized for client-side UI usage.
 
@@ -569,6 +569,10 @@ deLocalizeHref("/fr/store")  // => "/store"
 // Cross-origin links remain absolute
 deLocalizeHref("https://example.com/de/about")
 // => "https://example.com/about"
+
+// Protocol-relative links stay protocol-relative
+deLocalizeHref("//example.com/de/about")
+// => "//example.com/about"
 ```
 
 For server-side URL de-localization (e.g., in middleware), use `deLocalizeUrl()`
@@ -1087,7 +1091,7 @@ Use `toLocale()` when you want case-insensitive matching and canonicalization.
 
 > **localizeHref**(`href`, `options?`): `string`
 
-Defined in: [runtime/localize-href.js:45](https://github.com/opral/paraglide-js/tree/main/src/compiler/runtime/localize-href.js)
+Defined in: [runtime/localize-href.js:49](https://github.com/opral/paraglide-js/tree/main/src/compiler/runtime/localize-href.js)
 
 High-level URL localization function optimized for client-side UI usage.
 
@@ -1145,6 +1149,10 @@ localizeHref("/store", { locale: "fr" })
 // Cross-origin links remain absolute
 localizeHref("https://other-site.com/about")
 // => "https://other-site.com/de/about"
+
+// Protocol-relative links stay protocol-relative
+localizeHref("//other-site.com/about")
+// => "//other-site.com/de/about"
 ```
 
 For server-side URL localization (e.g., in middleware), use `localizeUrl()`
