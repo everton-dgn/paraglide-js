@@ -109,6 +109,8 @@ test.each([
 	{ header: "fr;q=1.0000", expected: undefined },
 	{ header: "fr;q=.5, de;q=0.4", expected: "de" },
 	{ header: "fr;q, de;q=0.5", expected: "de" },
+	{ header: "de;q 0,en;q=0.5", expected: "en" },
+	{ header: "fr;q 0.5, de;q=0.4", expected: "de" },
 	{ header: "fr;q=, de;q=0.5", expected: "de" },
 	// valid weights and ties
 	{ header: "fr;q=1.000, de;q=0.5", expected: "fr" },

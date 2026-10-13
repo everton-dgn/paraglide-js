@@ -24,8 +24,8 @@ export function extractLocaleFromHeader(request) {
 				const [tag = "", ...params] = splitOutsideQuotes(lang, ";").map((p) =>
 					p.trim()
 				);
-				const weight = params.find((param) => /^q\s*(?:=|$)/i.test(param));
-				const q = weight ? weight.replace(/^q\s*=?\s*/i, "") : "1";
+				const weight = params.find((param) => /^q(?:\s|=|$)/i.test(param));
+				const q = weight ? weight.replace(/^q\s*=\s*/i, "") : "1";
 				// Get both the full tag and base language code
 				const baseTag = tag.split("-")[0];
 				return {
