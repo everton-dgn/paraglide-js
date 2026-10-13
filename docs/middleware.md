@@ -275,6 +275,8 @@ Other GET/HEAD routes using the URL strategy receive the navigation fields. Redi
 
 When `Vary` fields are missing, mutable callback `Response` headers are updated in place, preserving response identity, subclass properties and runtime-specific state such as Cloudflare Workers body encoding. Responses with immutable headers are rebuilt using the original response as the constructor options; their status, headers and body are preserved, but subclass properties are not copied. Immutable responses that cannot be rebuilt keep their existing headers. Integrations that handle responses outside the callback must set these fields themselves. Custom strategies must also account for any additional headers they read.
 
+Locale splitting skips values without response headers or a body reader, and responses with consumed or locked bodies.
+
 API clients sending `Accept: */*` also qualify. Keep the default mode or exclude API routes with `routeStrategies` if they should never redirect.
 
 ### Controlling Redirects

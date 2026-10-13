@@ -1891,6 +1891,108 @@ test.each(["document", "navigation"] as const)(
 	}
 );
 
+test.each(
+	[
+		"sync undefined",
+		"async undefined",
+		"object",
+		"object with headers",
+		"error",
+		"consumed body",
+		"locked body",
+		"html",
+	].flatMap((kind) =>
+		[false, true].flatMap((experimentalMiddlewareLocaleSplitting) =>
+			(["document", "navigation"] as const).map((redirect) => ({
+				kind,
+				experimentalMiddlewareLocaleSplitting,
+				redirect,
+			}))
+		)
+	)
+)(
+	"$redirect redirects handle callback returns: $kind with locale splitting=$experimentalMiddlewareLocaleSplitting",
+	async ({ kind, experimentalMiddlewareLocaleSplitting, redirect }) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
+			}),
+			strategy: ["preferredLanguage", "url"],
+			experimentalMiddlewareLocaleSplitting,
+		});
+		let downstream: unknown;
+		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+		if (kind === "object") downstream = { handled: true };
+		if (kind === "object with headers") {
+			downstream = { headers: new Headers({ "Content-Type": "text/html" }) };
+		}
+		if (kind === "error") downstream = Response.error();
+		if (["consumed body", "locked body", "html"].includes(kind)) {
+			const response = new Response(
+				"<html><head></head><body>ok</body></html>",
+				{
+					headers: { "Content-Type": "text/html" },
+				}
+			);
+			if (kind === "consumed body") await response.text();
+			if (kind === "locked body") reader = response.body!.getReader();
+			downstream = response;
+		}
+		try {
+			const response = await runtime.paraglideMiddleware(
+				new Request("https://example.com/about", {
+					headers: { Accept: "application/json", "Accept-Language": "fr" },
+				}),
+				kind === "async undefined" ? async () => downstream : () => downstream,
+				{ redirect }
+			);
+			if (kind === "html") {
+				const htmlResponse = response as Response;
+				expect(htmlResponse.headers.get("Vary")).toBe(
+					redirect === "navigation"
+						? "Accept-Language, Accept, Sec-Fetch-Dest"
+						: "Accept-Language"
+				);
+				const html = await htmlResponse.text();
+				expect(html).toContain("<body>ok</body>");
+				expect(html.includes("globalThis.__paraglide.ssr")).toBe(
+					experimentalMiddlewareLocaleSplitting
+				);
+			} else expect(response).toBe(downstream);
+		} finally {
+			reader?.releaseLock();
+		}
+	}
+);
+
+test("locale splitting accepts responses created before the global Response is replaced", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "de"] },
+		}),
+		strategy: ["globalVariable", "baseLocale"],
+		experimentalMiddlewareLocaleSplitting: true,
+	});
+	const NativeResponse = Response;
+	const downstream = new NativeResponse(
+		"<html><head></head><body>ok</body></html>",
+		{ headers: { "Content-Type": "text/html" } }
+	);
+	vi.stubGlobal("Response", class extends NativeResponse {});
+	try {
+		expect(downstream).not.toBeInstanceOf(Response);
+		const response = await runtime.paraglideMiddleware(
+			new Request("https://example.com/page"),
+			() => downstream
+		);
+		const html = await response.text();
+		expect(html).toContain("globalThis.__paraglide.ssr");
+		expect(html).toContain("<body>ok</body>");
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
 // https://github.com/opral/inlang-paraglide-js/issues/477
 test("does not catch errors thrown by downstream resolve call", async () => {
 	const runtime = await createParaglide({
