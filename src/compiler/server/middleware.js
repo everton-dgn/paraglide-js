@@ -116,25 +116,23 @@ export async function paraglideMiddleware(request, resolve, options) {
 	}
 
 	const strategy = runtime.getStrategyForUrl(url.href);
+	const vary = getVaryFields(strategy);
 	const decision = await runtime.shouldRedirect({
 		request,
 		effectiveRequestUrl: url,
 	});
 	const locale = decision.locale;
 	// Custom server strategies run before built-in strategies, regardless of order.
+	const hasCustomStrategy = strategy.some((strat) =>
+		strat.startsWith("custom-")
+	);
 	const urlDecidesLocale =
 		options?.redirect === "navigation" &&
 		strategy[0] === "url" &&
-		!strategy.some((strat) => strat.startsWith("custom-")) &&
+		!hasCustomStrategy &&
 		runtime.extractLocaleFromUrl(url) !== undefined;
-	const navigationVary = [
-		...(!urlDecidesLocale && strategy.includes("preferredLanguage")
-			? ["Accept-Language"]
-			: []),
-		...(!urlDecidesLocale && strategy.includes("cookie") ? ["Cookie"] : []),
-		"Accept",
-		"Sec-Fetch-Dest",
-	];
+	const navigationVary =
+		options?.redirect === "navigation" ? ["Accept", "Sec-Fetch-Dest"] : [];
 
 	// if the client makes a request to a URL that doesn't match
 	// the localizedUrl, redirect the client to the localized URL
@@ -145,10 +143,9 @@ export async function paraglideMiddleware(request, resolve, options) {
 	) {
 		/** @type {Record<string, string>} */
 		const headers = {};
-		if (options?.redirect === "navigation") {
-			headers["Vary"] = navigationVary.join(", ");
-		} else if (strategy.includes("preferredLanguage")) {
-			headers["Vary"] = "Accept-Language";
+		const redirectVary = [...(urlDecidesLocale ? [] : vary), ...navigationVary];
+		if (redirectVary.length > 0) {
+			headers["Vary"] = redirectVary.join(", ");
 		}
 
 		const response = new Response(null, {
@@ -185,43 +182,21 @@ export async function paraglideMiddleware(request, resolve, options) {
 		() => resolve({ locale, request: newRequest })
 	);
 
-	// A cached callback response must not hide a redirect for different request headers.
-	if (
-		options?.redirect === "navigation" &&
-		(request.method === "GET" || request.method === "HEAD") &&
-		strategy.includes("url") &&
-		(!urlDecidesLocale || decision.shouldRedirect) &&
-		response instanceof Response &&
-		response.status >= 200 &&
-		response.status <= 599
-	) {
-		const headers = new Headers(response.headers);
-		const vary =
-			headers
-				.get("Vary")
-				?.split(",")
-				.map((field) => field.trim())
-				.filter(Boolean) ?? [];
-		if (!vary.includes("*")) {
-			const missing = navigationVary.filter(
-				(field) =>
-					!vary.some(
-						(existing) => existing.toLowerCase() === field.toLowerCase()
-					)
-			);
-			if (missing.length > 0) {
-				headers.set("Vary", [...vary, ...missing].join(", "));
-				try {
-					response = new Response(response.body, {
-						status: response.status,
-						statusText: response.statusText,
-						headers,
-					});
-				} catch {
-					// Keep the callback response if its body cannot be reused.
-				}
-			}
+	if (response instanceof Response) {
+		const urlIndex = strategy.indexOf("url");
+		const responseVary =
+			urlIndex !== -1 && !hasCustomStrategy && runtime.extractLocaleFromUrl(url)
+				? getVaryFields(strategy.slice(0, urlIndex))
+				: [...vary];
+		// Classifying navigations can change a cached 200 into a redirect.
+		if (
+			(request.method === "GET" || request.method === "HEAD") &&
+			urlIndex !== -1 &&
+			(!urlDecidesLocale || decision.shouldRedirect)
+		) {
+			responseVary.push(...navigationVary);
 		}
+		response = withVary(response, responseVary);
 	}
 
 	// Only modify HTML responses
@@ -289,6 +264,75 @@ export async function paraglideMiddleware(request, resolve, options) {
 	}
 
 	return response;
+}
+
+/**
+ * @param {string[]} strategy
+ * @returns {string[]}
+ */
+function getVaryFields(strategy) {
+	/** @type {string[]} */
+	const vary = [];
+	if (strategy.includes("cookie")) vary.push("Cookie");
+	if (strategy.includes("preferredLanguage")) vary.push("Accept-Language");
+	return vary;
+}
+
+/**
+ * @param {Response} response
+ * @param {string[]} vary
+ * @returns {Response}
+ */
+function withVary(response, vary) {
+	// Network errors and protocol upgrades are not ordinary HTTP responses.
+	if (response.status < 200 || response.status > 599) return response;
+	const existing = response.headers.get("Vary");
+	const fields =
+		existing?.split(",").map((field) => field.trim().toLowerCase()) ?? [];
+	if (fields.includes("*")) return response;
+	const missing = vary.filter((field) => !fields.includes(field.toLowerCase()));
+	if (missing.length === 0) return response;
+	const value = [existing, ...missing].filter(Boolean).join(", ");
+
+	try {
+		response.headers.set("Vary", value);
+		return response;
+	} catch (error) {
+		if (!(error instanceof TypeError)) throw error;
+	}
+
+	// Responses from fetch() or Response.redirect() can have immutable headers.
+	try {
+		// Preserve runtime-specific response state, including Workers body encoding.
+		const copy = new Response(response.body, response);
+		copy.headers.set("Vary", value);
+		return copyResponseMetadata(copy, response);
+	} catch {
+		// Keep callback responses whose body cannot be reused.
+		return response;
+	}
+}
+
+/**
+ * @param {Response} target
+ * @param {Response} source
+ * @returns {Response}
+ */
+function copyResponseMetadata(target, source) {
+	// ResponseInit omits fetch metadata, so clones need to retain it as well.
+	return Object.defineProperties(target, {
+		url: { value: source.url, configurable: true },
+		redirected: { value: source.redirected, configurable: true },
+		type: { value: source.type, configurable: true },
+		clone: {
+			configurable: true,
+			writable: true,
+			/** @this {Response} */
+			value() {
+				return copyResponseMetadata(Response.prototype.clone.call(this), this);
+			},
+		},
+	});
 }
 
 /**
