@@ -269,7 +269,9 @@ POST requests, including form submissions with `Sec-Fetch-Dest: document`, conti
 
 With this option, a client that accepts HTML can reach the localized URL instead of receiving the page at an unprefixed URL. The locale strategies still decide whether a redirect is needed. Put `url` before `cookie` and `preferredLanguage` if clients should be able to visit every localized URL. Otherwise a client whose preference differs from the URL can be redirected away from that locale. See [Controlling Redirects](#controlling-redirects) below.
 
-GET/HEAD routes using the URL strategy vary redirects and callback responses by `Accept` and `Sec-Fetch-Dest`, plus `Accept-Language` or `Cookie` when those strategies are enabled. This separates cached 200 and 307 responses. It also varies canonical pages whose locale comes from the URL, which can lower shared-cache hit rates. Existing `Vary` fields, including `*`, are preserved. The `onRedirect` callback runs only for middleware redirects.
+In this mode, when `url` is first, the URL resolves a locale and no custom strategy is configured, the middleware adds `Vary` only for a pending redirect. Canonicalization redirects then vary by `Accept` and `Sec-Fetch-Dest`, without the preference headers.
+
+Other GET/HEAD routes using the URL strategy receive those fields plus `Accept-Language` or `Cookie` when the corresponding strategy is enabled, even when the current locale matches the URL. This keeps cached 200 and 307 responses for the same URL separate. Existing `Vary` values, including `*`, are preserved. The `onRedirect` callback still runs only for middleware redirects.
 
 Callback `Response` objects are rebuilt when `Vary` fields are missing. Their status, headers and body are preserved, but subclass properties are not copied. Responses that cannot be rebuilt keep their existing headers. Integrations that handle responses outside the callback must set these fields themselves. Custom strategies must also account for any additional headers they read.
 
