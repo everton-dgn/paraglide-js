@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect, describe, beforeAll, vi } from "vitest";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { createParaglide } from "../create-paraglide.js";
@@ -1468,6 +1468,320 @@ test("only redirects if the request.headers.get('Sec-Fetch-Dest') === 'document'
 
 	// Middleware should be called since no redirect for API requests
 	expect(apiMiddlewareResolveWasCalled).toBe(true);
+});
+
+describe("navigation redirects", () => {
+	test.each([
+		["/fr/page", "fr", "Accept, Sec-Fetch-Dest"],
+		["/page", "en", "Cookie, Accept-Language, Accept, Sec-Fetch-Dest"],
+	])(
+		"varies navigation responses according to URL resolution for %s",
+		async (path, locale, expectedVary) => {
+			const instance = await createParaglide({
+				blob: await newProject({
+					settings: { baseLocale: "en", locales: ["en", "fr"] },
+				}),
+				strategy: ["url", "cookie", "preferredLanguage", "baseLocale"],
+				urlPatterns: [
+					{
+						pattern: "https://example.com/:path(.*)?",
+						localized: [
+							["en", "https://example.com/en/:path(.*)?"],
+							["fr", "https://example.com/fr/:path(.*)?"],
+						],
+					},
+				],
+			});
+			const response = await instance.paraglideMiddleware(
+				new Request(`https://example.com${path}`, {
+					headers: {
+						Cookie: "PARAGLIDE_LOCALE=en",
+						"Accept-Language": "en",
+						Accept: "text/html",
+						"Sec-Fetch-Dest": "empty",
+					},
+				}),
+				({ locale }) => new Response(locale),
+				{ redirect: "navigation" }
+			);
+			expect(response.headers.get("Vary")).toBe(expectedVary);
+			expect(await response.text()).toBe(locale);
+		}
+	);
+
+	let runtime: Awaited<ReturnType<typeof createParaglide>>;
+	const vary = "Cookie, Accept-Language, Accept, Sec-Fetch-Dest";
+	beforeAll(async () => {
+		runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
+			}),
+			strategy: ["preferredLanguage", "cookie", "url"],
+			routeStrategies: [
+				{ match: "/api/:path(.*)?", exclude: true },
+				{ match: "/no-url", strategy: ["preferredLanguage"] },
+			],
+		});
+	});
+
+	test.each([
+		["GET", undefined, "text/html", 307],
+		["HEAD", undefined, "text/html", 307],
+		["GET", undefined, "*/*", 307],
+		["GET", undefined, "text/*", 307],
+		[
+			"GET",
+			undefined,
+			"application/json, TEXT/HTML; charset=utf-8; Q=0.5",
+			307,
+		],
+		["GET", undefined, "text/html;q=0.001", 307],
+		["GET", undefined, "text/html;q=0, */*", 200],
+		["GET", undefined, "*/*, text/html;q=0", 200],
+		["GET", undefined, "text/*;q=0, */*", 200],
+		["GET", undefined, "text/html;q=0.5, text/*;q=0", 307],
+		["GET", undefined, "text/html;q=invalid", 200],
+		["GET", undefined, "text/html;q=2", 200],
+		["GET", undefined, "text/html;q=-1", 200],
+		["GET", undefined, "text/html;q=0.1234", 200],
+		["GET", undefined, 'text/html;profile="a,b";q=0, */*;q=0', 200],
+		["GET", undefined, 'text/html;profile="x;q=0";q=1', 307],
+		["GET", undefined, 'text/html;profile="x;q=1";q=0', 200],
+		["GET", undefined, 'text/html;profile="a\\\",b";q=0, */*;q=0', 200],
+		["GET", undefined, 'text/html;profile="a\\\";q=0";q=1', 307],
+		["GET", undefined, 'text/html;profile="a\\\\";q=0, */*;q=0', 200],
+		["GET", undefined, 'text/html;profile="unterminated', 200],
+		["GET", undefined, "application/json", 200],
+		["GET", undefined, "application/xhtml+xml", 200],
+		["GET", undefined, "text/html-invalid", 200],
+		["GET", undefined, "", 200],
+		["GET", undefined, undefined, 200],
+		["GET", "empty", "text/html", 200],
+		["GET", "", "text/html", 200],
+		["GET", "script", "text/html", 200],
+		["GET", "document", "application/json", 307],
+		["HEAD", "document", undefined, 307],
+		["POST", undefined, "text/html", 200],
+		["POST", "document", "text/html", 200],
+		["PUT", "document", "text/html", 200],
+		["OPTIONS", undefined, "text/html", 200],
+	] as const)(
+		"%s with destination %s and Accept %s returns %i",
+		async (method, destination, accept, status) => {
+			const headers = new Headers({
+				"Accept-Language": "fr",
+				"Content-Type": "application/x-www-form-urlencoded",
+			});
+			if (destination !== undefined) headers.set("Sec-Fetch-Dest", destination);
+			if (accept !== undefined) headers.set("Accept", accept);
+			const body = method === "POST" ? "name=Alice" : undefined;
+			const request = new Request("https://example.com/about?from=test", {
+				method,
+				headers,
+				body,
+			});
+			const resolve = vi.fn(
+				async ({ request: localized }: { request: Request }) => {
+					expect(localized.method).toBe(method);
+					expect(await localized.text()).toBe(body ?? "");
+					return new Response(null);
+				}
+			);
+			const onRedirect = vi.fn();
+			const response = await runtime.paraglideMiddleware(request, resolve, {
+				redirect: "navigation",
+				onRedirect,
+			});
+			expect(response.status).toBe(status);
+			expect(resolve).toHaveBeenCalledTimes(status === 307 ? 0 : 1);
+			expect(onRedirect).toHaveBeenCalledTimes(status === 307 ? 1 : 0);
+			expect(response.headers.get("Location")).toBe(
+				status === 307 ? "https://example.com/fr/about?from=test" : null
+			);
+			expect(response.headers.get("Vary")).toBe(
+				method === "GET" || method === "HEAD" ? vary : "Cookie, Accept-Language"
+			);
+			expect(response.body).toBeNull();
+			expect(request.bodyUsed).toBe(false);
+			expect(await request.text()).toBe(body ?? "");
+		}
+	);
+
+	test.each([undefined, "document", null, "nav"])(
+		"keeps default behavior for redirect=%s",
+		async (redirect) => {
+			for (const method of ["GET", "HEAD", "POST"]) {
+				for (const destination of [undefined, "document", "empty"]) {
+					const headers = new Headers({
+						Accept: "text/html",
+						"Accept-Language": "fr",
+					});
+					if (destination) headers.set("Sec-Fetch-Dest", destination);
+					const response = await runtime.paraglideMiddleware(
+						new Request("https://example.com/about", { method, headers }),
+						() => new Response(null),
+						redirect === undefined
+							? undefined
+							: { redirect: redirect as "document" }
+					);
+					expect(response.status).toBe(destination === "document" ? 307 : 200);
+					expect(response.headers.get("Vary")).toBe("Cookie, Accept-Language");
+				}
+			}
+		}
+	);
+
+	test.each(["GET", "HEAD"])(
+		"separates cached 200 and 307 responses for %s",
+		async (method) => {
+			for (const field of ["Accept-Language", "Cookie"]) {
+				for (const locale of ["en", "fr"]) {
+					for (const previous of [
+						"",
+						"Accept-Encoding",
+						vary.toLowerCase(),
+						"*",
+					]) {
+						const downstream = new Response(method === "HEAD" ? null : "ok", {
+							headers: {
+								Vary: previous,
+								"Cache-Control": "public, max-age=600",
+							},
+						});
+						const response = await runtime.paraglideMiddleware(
+							new Request("http://internal.example.com/about", {
+								method,
+								headers: {
+									Accept: "text/html",
+									[field]:
+										field === "Cookie" ? `PARAGLIDE_LOCALE=${locale}` : locale,
+								},
+							}),
+							() => downstream,
+							{
+								redirect: "navigation",
+								effectiveRequestUrl: "https://example.com/about?from=test",
+							}
+						);
+						expect(response.status).toBe(locale === "fr" ? 307 : 200);
+						expect(response.headers.get("Location")).toBe(
+							locale === "fr" ? "https://example.com/fr/about?from=test" : null
+						);
+						const expected =
+							previous === "Accept-Encoding"
+								? `${previous}, ${vary}`
+								: previous || vary;
+						expect(response.headers.get("Vary")).toBe(
+							locale === "fr" ? vary : expected
+						);
+						if (locale === "en") {
+							expect(response.headers.get("Cache-Control")).toBe(
+								"public, max-age=600"
+							);
+							expect(await response.text()).toBe(method === "HEAD" ? "" : "ok");
+							expect(response).toBe(downstream);
+							expect(downstream.headers.get("Vary")).toBe(expected);
+						}
+					}
+				}
+			}
+		}
+	);
+
+	test("preserves response identity and custom state when adding Vary", async () => {
+		class FrameworkResponse extends Response {
+			readonly context = { compression: "manual", framework: "example" };
+		}
+		const downstream = new FrameworkResponse("ok", {
+			status: 201,
+			statusText: "Created",
+			headers: { Vary: "Accept-Encoding", "X-Framework": "example" },
+		});
+		const response = await runtime.paraglideMiddleware(
+			new Request("https://example.com/about", {
+				headers: { Accept: "application/json" },
+			}),
+			() => downstream,
+			{ redirect: "navigation" }
+		);
+		expect(response).toBe(downstream);
+		expect(response).toBeInstanceOf(FrameworkResponse);
+		expect(downstream.context).toEqual({
+			compression: "manual",
+			framework: "example",
+		});
+		expect(response.status).toBe(201);
+		expect(response.statusText).toBe("Created");
+		expect(response.headers.get("X-Framework")).toBe("example");
+		expect(response.headers.get("Vary")).toBe(`Accept-Encoding, ${vary}`);
+		expect(await response.text()).toBe("ok");
+	});
+
+	test("preserves callback returns with unusable bodies", async () => {
+		const consumed = new Response("ok");
+		await consumed.text();
+		const locked = new Response("ok");
+		const reader = locked.body!.getReader();
+		try {
+			for (const value of [undefined, {}, Response.error(), consumed, locked]) {
+				const response = await runtime.paraglideMiddleware(
+					new Request("https://example.com/about", {
+						headers: { Accept: "application/json" },
+					}),
+					async () => value,
+					{ redirect: "navigation" }
+				);
+				expect(response).toBe(value);
+			}
+		} finally {
+			reader.releaseLock();
+		}
+	});
+
+	test("preserves a fetched body when immutable headers require a replacement", async () => {
+		const downstream = await fetch("data:text/plain,ok");
+		expect(() => downstream.headers.set("Vary", "Accept")).toThrow();
+		const response = await runtime.paraglideMiddleware(
+			new Request("https://example.com/about", {
+				headers: { Accept: "application/json" },
+			}),
+			() => downstream,
+			{ redirect: "navigation" }
+		);
+		expect(response).not.toBe(downstream);
+		expect(response.status).toBe(downstream.status);
+		expect(response.statusText).toBe(downstream.statusText);
+		expect(response.headers.get("Content-Type")).toBe("text/plain");
+		expect(response.headers.get("Vary")).toBe(vary);
+		expect(downstream.headers.get("Vary")).toBeNull();
+		expect(await response.text()).toBe("ok");
+	});
+
+	test("varies immutable headers only on routes using URL strategy", async () => {
+		for (const path of ["/about", "/api/data", "/no-url"]) {
+			const downstream = Response.redirect("https://example.com/login", 303);
+			const response = await runtime.paraglideMiddleware(
+				new Request(`https://example.com${path}`, {
+					headers: {
+						Accept: path === "/about" ? "application/json" : "text/html",
+						Cookie: "PARAGLIDE_LOCALE=fr",
+						"Accept-Language": "fr",
+					},
+				}),
+				() => downstream,
+				{ redirect: "navigation" }
+			);
+			expect(response.status).toBe(303);
+			expect(response.statusText).toBe(downstream.statusText);
+			expect(response.headers.get("Location")).toBe(
+				"https://example.com/login"
+			);
+			expect(response.headers.get("Vary")).toBe(
+				path === "/about" ? vary : path === "/no-url" ? "Accept-Language" : null
+			);
+			expect(downstream.headers.get("Vary")).toBeNull();
+		}
+	});
 });
 
 // https://github.com/opral/inlang-paraglide-js/issues/477

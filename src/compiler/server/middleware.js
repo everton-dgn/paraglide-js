@@ -12,13 +12,13 @@ import * as runtime from "./runtime.js";
  * This middleware performs several key functions:
  *
  * 1. Determines the locale for the incoming request using configured strategies
- * 2. Handles URL localization and redirects (only for document requests)
+ * 2. Handles URL localization and redirects (only for document requests by default)
  * 3. Maintains locale state using AsyncLocalStorage to prevent request interference
  *
  * When URL strategy is used:
  *
  * - The locale is extracted from the URL for all request types
- * - If URL doesn't match the determined locale, redirects to localized URL (only for document requests)
+ * - If URL doesn't match the determined locale, redirects to localized URL (only for document requests by default)
  * - De-localizes URLs before passing to server (e.g., `/fr/about` → `/about`)
  *
  * @see https://paraglidejs.com/middleware
@@ -33,8 +33,13 @@ import * as runtime from "./runtime.js";
  *   - `locale`: The determined locale for this request.
  * @param {{
  *   effectiveRequestUrl?: string | URL | ((request: Request) => string | URL),
+ *   redirect?: "document" | "navigation",
  *   onRedirect?: (response: Response) => void
  * }} [options] - Options to control middleware behavior. `effectiveRequestUrl` sets the effective request URL used for route matching, URL-based locale detection, redirects, and `getUrlOrigin()`.
+ *   `redirect` defaults to `"document"`, which requires `Sec-Fetch-Dest: document`.
+ *   Unrecognized values keep that default behavior.
+ *   `"navigation"` only redirects GET/HEAD requests, accepting either that destination
+ *   or an absent destination with an explicit `Accept` header that allows `text/html`.
  * @returns {Promise<Response>}
  *
  * @example
@@ -117,18 +122,21 @@ export async function paraglideMiddleware(request, resolve, options) {
 		effectiveRequestUrl: url,
 	});
 	const locale = decision.locale;
+	const navigationVary =
+		options?.redirect === "navigation" ? ["Accept", "Sec-Fetch-Dest"] : [];
 
 	// if the client makes a request to a URL that doesn't match
 	// the localizedUrl, redirect the client to the localized URL
 	if (
-		request.headers.get("Sec-Fetch-Dest") === "document" &&
+		shouldRedirectRequest(request, options?.redirect) &&
 		decision.shouldRedirect &&
 		decision.redirectUrl
 	) {
 		/** @type {Record<string, string>} */
 		const headers = {};
-		if (vary.length > 0) {
-			headers["Vary"] = vary.join(", ");
+		const redirectVary = [...vary, ...navigationVary];
+		if (redirectVary.length > 0) {
+			headers["Vary"] = redirectVary.join(", ");
 		}
 
 		const response = new Response(null, {
@@ -165,12 +173,19 @@ export async function paraglideMiddleware(request, resolve, options) {
 		() => resolve({ locale, request: newRequest })
 	);
 
-	if (vary.length > 0 && response instanceof Response) {
+	if (response instanceof Response) {
 		const urlIndex = strategy.indexOf("url");
 		const responseVary =
 			urlIndex !== -1 && runtime.extractLocaleFromUrl(url)
 				? getVaryFields(strategy.slice(0, urlIndex))
 				: vary;
+		// Classifying navigations can change a cached 200 into a redirect.
+		if (
+			(request.method === "GET" || request.method === "HEAD") &&
+			urlIndex !== -1
+		) {
+			responseVary.push(...navigationVary);
+		}
 		response = withVary(response, responseVary);
 	}
 
@@ -273,14 +288,15 @@ function withVary(response, vary) {
 	}
 
 	// Responses from fetch() or Response.redirect() can have immutable headers.
-	const headers = new Headers(response.headers);
-	headers.set("Vary", value);
-	const copy = new Response(response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers,
-	});
-	return copyResponseMetadata(copy, response);
+	try {
+		// Preserve runtime-specific response state, including Workers body encoding.
+		const copy = new Response(response.body, response);
+		copy.headers.set("Vary", value);
+		return copyResponseMetadata(copy, response);
+	} catch {
+		// Keep callback responses whose body cannot be reused.
+		return response;
+	}
 }
 
 /**
@@ -303,6 +319,76 @@ function copyResponseMetadata(target, source) {
 			},
 		},
 	});
+}
+
+/**
+ * @param {Request} request
+ * @param {"document" | "navigation"} [redirect]
+ * @returns {boolean}
+ */
+function shouldRedirectRequest(request, redirect) {
+	const destination = request.headers.get("Sec-Fetch-Dest");
+	if (redirect !== "navigation") return destination === "document";
+	if (request.method !== "GET" && request.method !== "HEAD") return false;
+	if (destination !== null) return destination === "document";
+
+	let specificity = -1;
+	let quality = 0;
+	for (const range of splitHeaderValue(
+		request.headers.get("Accept") ?? "",
+		","
+	)) {
+		const [type, ...parameters] = splitHeaderValue(range, ";").map((part) =>
+			part.trim().toLowerCase()
+		);
+		const rangeSpecificity =
+			type === "text/html"
+				? 2
+				: type === "text/*"
+					? 1
+					: type === "*/*"
+						? 0
+						: -1;
+		if (rangeSpecificity < 0 || rangeSpecificity < specificity) continue;
+
+		const weight = parameters.find((parameter) => /^q\s*=/.test(parameter));
+		const value = weight ? weight.slice(weight.indexOf("=") + 1).trim() : "1";
+		const rangeQuality = /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(value)
+			? Number(value)
+			: 0;
+		// A specific q=0 exclusion takes precedence over an acceptable wildcard.
+		quality =
+			rangeSpecificity > specificity
+				? rangeQuality
+				: Math.max(quality, rangeQuality);
+		specificity = rangeSpecificity;
+	}
+	return quality > 0;
+}
+
+/**
+ * @param {string} value
+ * @param {string} separator
+ * @returns {string[]}
+ */
+function splitHeaderValue(value, separator) {
+	const parts = [];
+	let start = 0;
+	let quoted = false;
+	for (let index = 0; index < value.length; index++) {
+		const character = value[index];
+		if (quoted && character === "\\") {
+			index++;
+		} else if (character === '"') {
+			quoted = !quoted;
+		} else if (!quoted && character === separator) {
+			parts.push(value.slice(start, index));
+			start = index + 1;
+		}
+	}
+	if (quoted) return [];
+	parts.push(value.slice(start));
+	return parts;
 }
 
 /**

@@ -248,10 +248,32 @@ For excluded routes, Paraglide skips i18n middleware behavior (locale redirects 
 The middleware only redirects when ALL of these are true:
 
 1. URL strategy is configured
-2. The request is for a document (not API, assets, etc.)
+2. The request matches the `redirect` mode (by default, `Sec-Fetch-Dest: document`)
 3. The URL locale doesn't match the detected locale
 
 Redirects use HTTP 307 (Temporary Redirect) to preserve the request method.
+
+### Redirecting HTML navigations
+
+HTTP clients that omit `Sec-Fetch-Dest`, such as `curl`, do not receive redirects by default. Use `redirect: "navigation"` to include GET and HEAD requests whose `Accept` header allows HTML:
+
+```ts
+return paraglideMiddleware(request, ({ request }) => resolve(request), {
+	redirect: "navigation",
+});
+```
+
+This mode redirects only GET and HEAD requests. They must have either `Sec-Fetch-Dest: document`, or no `Sec-Fetch-Dest` and an explicit `Accept` header allowing `text/html`, `text/*`, or `*/*`. Quality values are respected: `text/html;q=0, */*` excludes HTML. An absent or empty `Accept` does not enable the fallback. Other destinations, including `empty`, do not enable it either.
+
+POST requests, including form submissions with `Sec-Fetch-Dest: document`, continue to the resolve callback without a middleware redirect. The default `redirect: "document"` keeps its existing behavior, including 307 redirects for form submissions. Unrecognized option values also use the default behavior.
+
+With this option, a client that accepts HTML can reach the localized URL instead of receiving the page at an unprefixed URL. The locale strategies still decide whether a redirect is needed. Put `url` before `cookie` and `preferredLanguage` if clients should be able to visit every localized URL. Otherwise a client whose preference differs from the URL can be redirected away from that locale. See [Controlling Redirects](#controlling-redirects) below.
+
+GET/HEAD routes using the URL strategy vary redirects and callback responses by `Accept` and `Sec-Fetch-Dest`. Redirects also vary by `Cookie` and `Accept-Language` when those strategies are configured. Callback responses use those preference fields only when the preferences precede the URL strategy or the URL supplies no locale. This separates cached 200 and 307 responses while avoiding unnecessary preference variants on canonical pages. Canonical pages still vary by the navigation headers. Existing `Vary` fields, including `*`, are preserved. The `onRedirect` callback runs only for middleware redirects.
+
+When `Vary` fields are missing, mutable callback `Response` headers are updated in place, preserving response identity, subclass properties and runtime-specific state such as Cloudflare Workers body encoding. Responses with immutable headers are rebuilt using the original response as the constructor options; their status, headers and body are preserved, but subclass properties are not copied. Immutable responses that cannot be rebuilt keep their existing headers. Integrations that handle responses outside the callback must set these fields themselves. Custom strategies must also account for any additional headers they read.
+
+API clients sending `Accept: */*` also qualify. Keep the default mode or exclude API routes with `routeStrategies` if they should never redirect.
 
 ### Controlling Redirects
 
