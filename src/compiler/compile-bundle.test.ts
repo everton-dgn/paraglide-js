@@ -4,6 +4,31 @@ import type { BundleNested, ProjectSettings } from "@inlang/sdk";
 import { toSafeModuleId } from "./safe-module-id.js";
 import { perLocaleBuildStaticLocaleExpression } from "./per-locale-build.js";
 
+function createPlainTextBundle(
+	id: string,
+	textByLocale: Record<string, string>,
+	declarations: BundleNested["declarations"] = []
+): BundleNested {
+	return {
+		id,
+		declarations,
+		messages: Object.entries(textByLocale).map(([locale, value]) => ({
+			id: `${id}-${locale}`,
+			bundle_id: id,
+			locale,
+			selectors: [],
+			variants: [
+				{
+					id: `${id}-${locale}-variant`,
+					message_id: `${id}-${locale}`,
+					matches: [],
+					pattern: [{ type: "text" as const, value }],
+				},
+			],
+		})),
+	};
+}
+
 test("compiles to jsdoc", async () => {
 	const mockBundle: BundleNested = {
 		id: "blue_moon_bottle",
@@ -33,6 +58,7 @@ test("compiles to jsdoc", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			en: "en",
 			"en-US": "en",
@@ -88,6 +114,7 @@ test("uses the base locale as the exhaustive locale branch", () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			fr: "en",
 			de: "en",
@@ -107,8 +134,226 @@ test("uses the base locale as the exhaustive locale branch", () => {
 			'if (locale === "fr") return fr_greeting(inputs)',
 			'if (locale === "de") return de_greeting(inputs)',
 			'if (locale === "ja") return ja_greeting(inputs)',
-			"return en_greeting(inputs)",
+			'return /** @type {LocalizedString} */ ("Hello")',
 		].join("\n\t")
+	);
+});
+
+test("inlines static text with safe escaping and preserves missing-locale fallbacks", async () => {
+	const id = "$p@44🍌";
+	const safeId = toSafeModuleId(id);
+	const trickyText =
+		'quote " backslash \\ backtick ` interpolation ${danger}\r\n</script><script>alert(1)</script> */\u2028\u2029';
+	const compiledText = trickyText.replace(/\r\n?/g, "\n");
+	const bundle = createPlainTextBundle(id, { en: trickyText, de: "Hallo" }, [
+		{ type: "input-variable", name: "unused" },
+	]);
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle,
+		fallbackMap: { en: undefined, de: "en", fr: "en" },
+		messageReferenceExpression: (locale, bundleId) =>
+			`${toSafeModuleId(locale)}_${toSafeModuleId(bundleId)}`,
+		settings: {
+			baseLocale: "en",
+			locales: ["en", "de", "fr"],
+		} as ProjectSettings,
+		experimentalMiddlewareLocaleSplitting: true,
+	});
+
+	expect(result.bundle.code).toContain(
+		`if (locale === "de") return /** @type {LocalizedString} */ (${JSON.stringify("Hallo")})`
+	);
+	expect(result.bundle.code).toContain(
+		`if (locale === "fr") return fr_${safeId}(inputs)`
+	);
+	expect(result.bundle.code).toContain(
+		`return /** @type {LocalizedString} */ (${JSON.stringify(compiledText)})`
+	);
+	expect(result.bundle.code).toContain(`trackMessageCall("${safeId}", locale)`);
+	expect(result.bundle.code).toContain(
+		`globalThis).__paraglide.ssr.${safeId}(inputs)`
+	);
+	expect(result.messages.en?.code).toBeDefined();
+
+	const enMessage = result.messages.en;
+	const deMessage = result.messages.de;
+	if (!enMessage || !deMessage) throw new Error("Expected compiled messages");
+	const moduleSource = `
+const getLocale = () => "en";
+const trackMessageCall = () => {};
+const experimentalMiddlewareLocaleSplitting = false;
+const isServer = true;
+const experimentalStaticLocale = undefined;
+const en_${safeId} = ${enMessage.code.replace(/;\s*$/, "")};
+const de_${safeId} = ${deMessage.code.replace(/;\s*$/, "")};
+const fr_${safeId} = en_${safeId};
+${result.bundle.code}
+`;
+	const module = await import(
+		"data:text/javascript;charset=utf-8," + encodeURIComponent(moduleSource)
+	);
+	const message = module[id];
+	const unreadInput = new Proxy(
+		{},
+		{
+			get: () => {
+				throw new Error("static text should not read inputs");
+			},
+		}
+	);
+
+	expect(message(unreadInput, { locale: "en" })).toBe(compiledText);
+	expect(message({}, { locale: "de" })).toBe("Hallo");
+	expect(message({}, { locale: "fr" })).toBe(compiledText);
+});
+
+test("leaves markup and multi-variant messages on their message functions", () => {
+	const markupBundle: BundleNested = {
+		id: "notice",
+		declarations: [],
+		messages: [
+			{
+				id: "notice-en",
+				bundle_id: "notice",
+				locale: "en",
+				selectors: [],
+				variants: [
+					{
+						id: "notice-en-variant",
+						message_id: "notice-en",
+						matches: [],
+						pattern: [
+							{
+								type: "markup-start",
+								name: "strong",
+								options: [],
+								attributes: [],
+							},
+							{ type: "text", value: "Hello" },
+							{
+								type: "markup-end",
+								name: "strong",
+								options: [],
+								attributes: [],
+							},
+						],
+					},
+				],
+			},
+		],
+	};
+	const markupResult = compileBundle({
+		inlineMessages: true,
+		bundle: markupBundle,
+		fallbackMap: { en: undefined },
+		messageReferenceExpression: (locale) => `${locale}_notice`,
+		settings: { baseLocale: "en", locales: ["en"] } as ProjectSettings,
+	});
+	expect(markupResult.bundle.code).toContain("return en_notice(inputs)");
+	expect(markupResult.bundle.code).not.toContain(
+		'return /** @type {LocalizedString} */ ("Hello")'
+	);
+
+	const multiVariantBundle: BundleNested = {
+		id: "item_count",
+		declarations: [{ type: "input-variable", name: "count" }],
+		messages: ["en", "de"].map((locale) => ({
+			id: `item_count-${locale}`,
+			bundle_id: "item_count",
+			locale,
+			selectors: [{ type: "variable-reference", name: "count" }],
+			variants: [
+				{
+					id: `item_count-${locale}-zero`,
+					message_id: `item_count-${locale}`,
+					matches: [{ type: "literal-match", key: "count", value: "0" }],
+					pattern: [{ type: "text", value: "No items" }],
+				},
+				{
+					id: `item_count-${locale}-other`,
+					message_id: `item_count-${locale}`,
+					matches: [{ type: "catchall-match", key: "count" }],
+					pattern: [{ type: "text", value: "Some items" }],
+				},
+			],
+		})),
+	};
+	const multiVariantResult = compileBundle({
+		inlineMessages: true,
+		bundle: multiVariantBundle,
+		fallbackMap: { en: undefined, de: "en" },
+		messageReferenceExpression: (locale) => `${locale}_item_count`,
+		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
+	});
+	expect(multiVariantResult.bundle.code).toContain(
+		'if (locale === "de") return de_item_count(inputs)'
+	);
+	expect(multiVariantResult.bundle.code).toContain(
+		"return en_item_count(inputs)"
+	);
+});
+
+test("keeps static text message references in a per-locale build", () => {
+	const bundle = createPlainTextBundle("greeting", {
+		en: "Hello",
+		de: "Hallo",
+	});
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle,
+		fallbackMap: { en: undefined, de: "en" },
+		messageReferenceExpression: (locale) => `${locale}_greeting`,
+		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
+		experimentalStaticLocale: perLocaleBuildStaticLocaleExpression,
+	});
+
+	expect(result.bundle.code).toContain(
+		'if (locale === "de") return de_greeting(inputs)'
+	);
+	expect(result.bundle.code).toContain("return en_greeting(inputs)");
+});
+
+test("marks an unused input parameter as used when every branch is inlined", () => {
+	const bundle = createPlainTextBundle("greeting", { en: "Hello" }, [
+		{ type: "input-variable", name: "unused" },
+	]);
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle,
+		fallbackMap: { en: undefined },
+		messageReferenceExpression: (locale) => `${locale}_greeting`,
+		settings: { baseLocale: "en", locales: ["en"] } as ProjectSettings,
+	});
+
+	expect(result.bundle.code).toContain("void inputs;");
+	expect(result.bundle.code).toContain(
+		'return /** @type {LocalizedString} */ ("Hello")'
+	);
+});
+
+test("does not treat inherited object properties as inline locale messages", () => {
+	const bundle = createPlainTextBundle("greeting", { en: "Hello" });
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle,
+		fallbackMap: { en: undefined, toString: "en", constructor: "en" },
+		messageReferenceExpression: (locale) =>
+			`${toSafeModuleId(locale)}_greeting`,
+		settings: {
+			baseLocale: "en",
+			locales: ["en", "toString", "constructor"],
+		} as ProjectSettings,
+	});
+
+	expect(result.bundle.code).toContain(
+		`if (locale === "toString") return ${toSafeModuleId("toString")}_greeting(inputs)`
+	);
+	expect(result.bundle.code).toContain(
+		`if (locale === "constructor") return ${toSafeModuleId("constructor")}_greeting(inputs)`
+	);
+	expect(result.bundle.code).toContain(
+		'return /** @type {LocalizedString} */ ("Hello")'
 	);
 });
 
@@ -130,6 +375,7 @@ test("emits middleware locale splitting hooks when enabled", () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: { en: "en" },
 		bundle: mockBundle,
 		messageReferenceExpression: (locale) =>
@@ -188,6 +434,7 @@ test("emits the per-locale build marker inside the message function", () => {
 	};
 	const expression = perLocaleBuildStaticLocaleExpression;
 	const result = compileBundle({
+		inlineMessages: true,
 		bundle: mockBundle,
 		fallbackMap: { en: undefined, de: "en" },
 		messageReferenceExpression: (locale) => `${locale}_greeting`,
@@ -233,6 +480,7 @@ test("compiles to jsdoc with missing translation", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			en: "en",
 			"en-US": "en",
@@ -296,6 +544,7 @@ test("compiles bundles with arbitrary module identifiers", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {},
 		bundle: mockBundle,
 		messageReferenceExpression: (locale) =>
@@ -353,6 +602,7 @@ test("handles message pattern with duplicate variable references", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			en: "en",
 		},
@@ -416,6 +666,7 @@ test("adds .parts() to bundle functions when markup exists", async () => {
 	};
 
 	const result = compileBundle({
+		inlineMessages: true,
 		fallbackMap: {
 			en: undefined,
 		},
@@ -455,5 +706,18 @@ ${result.bundle.code}
 	]);
 	expect(result.bundle.code).toContain(
 		'MessageMetadata<NoticeInputs, { locale?: "en" }, { strong: { options: {}; attributes: {}; children: true } }>'
+	);
+});
+
+test("low-level compilation preserves references without a layout opt-in", () => {
+	const result = compileBundle({
+		bundle: createPlainTextBundle("plain", { en: "Hello", de: "Hallo" }),
+		fallbackMap: { en: undefined, de: "en" },
+		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
+		messageReferenceExpression: (locale) => `${locale}_plain`,
+	});
+	expect(result.bundle.code).toContain("return de_plain(inputs)");
+	expect(result.bundle.code).not.toContain(
+		'return /** @type {LocalizedString} */ ("Hallo")'
 	);
 });
