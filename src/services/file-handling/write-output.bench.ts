@@ -9,6 +9,10 @@ const output = Object.fromEntries(
 		`export const m${index} = ${JSON.stringify("Hello world")}`,
 	])
 );
+const localeOutput = {
+	"messages/en.js": Object.values(output).join("\n"),
+	"messages/de.js": Object.values(output).join("\n"),
+};
 const mockFs = () =>
 	memfs.createFsFromVolume(new memfs.Volume()).promises as unknown as NodeFs;
 const unchangedFs = mockFs();
@@ -30,9 +34,12 @@ beforeAll(async () => {
 	});
 });
 
-bench("write 2,000 generated message modules", async () => {
-	await writeOutput({ directory: "/output", output, fs: mockFs() });
-});
+bench(
+	"write 2,000 generated message modules (including memfs setup)",
+	async () => {
+		await writeOutput({ directory: "/output", output, fs: mockFs() });
+	}
+);
 
 bench("unchanged 2,000 generated message modules", async () => {
 	await writeOutput({
@@ -60,13 +67,13 @@ bench("rewrite one of 2,000 generated message modules", async () => {
 	});
 });
 
-bench("write two aggregate locale modules", async () => {
-	await writeOutput({
-		directory: "/output",
-		output: {
-			"messages/en.js": Object.values(output).join("\n"),
-			"messages/de.js": Object.values(output).join("\n"),
-		},
-		fs: mockFs(),
-	});
-});
+bench(
+	"write two aggregate locale modules (including memfs setup)",
+	async () => {
+		await writeOutput({
+			directory: "/output",
+			output: localeOutput,
+			fs: mockFs(),
+		});
+	}
+);
