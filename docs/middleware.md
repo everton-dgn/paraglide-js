@@ -275,6 +275,8 @@ Other GET/HEAD routes using the URL strategy receive those fields plus `Accept-L
 
 Callback `Response` objects are rebuilt when `Vary` fields are missing. Their status, headers and body are preserved, but subclass properties are not copied. Responses that cannot be rebuilt keep their existing headers. Integrations that handle responses outside the callback must set these fields themselves. Custom strategies must also account for any additional headers they read.
 
+Locale splitting skips values without response headers or a body reader, and responses with consumed or locked bodies.
+
 API clients sending `Accept: */*` also qualify. Keep the default mode or exclude API routes with `routeStrategies` if they should never redirect.
 
 ### Controlling Redirects
