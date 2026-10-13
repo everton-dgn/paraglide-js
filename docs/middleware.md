@@ -273,7 +273,7 @@ In this mode, when `url` is first, the URL resolves a locale and no custom strat
 
 Other GET/HEAD routes using the URL strategy receive those fields plus `Accept-Language` or `Cookie` when the corresponding strategy is enabled, even when the current locale matches the URL. This keeps cached 200 and 307 responses for the same URL separate. Existing `Vary` values, including `*`, are preserved. The `onRedirect` callback still runs only for middleware redirects.
 
-Callback `Response` objects are rebuilt only when `Vary` fields are missing. Their status, headers and body are preserved, but properties added by a subclass are not copied. Other callback values, such as `undefined`, and responses that cannot be rebuilt pass through unchanged. Integrations that handle responses outside the callback must set these `Vary` fields themselves. Applications using custom locale strategies must also account for any additional headers those strategies read.
+Callback `Response` objects are rebuilt only when `Vary` fields are missing. Their status, headers and body are preserved, but properties added by a subclass are not copied. Other callback values, such as `undefined`, and responses that cannot be rebuilt pass through unchanged. Locale splitting also skips values without response headers or a body reader, and responses with consumed or locked bodies. Integrations that handle responses outside the callback must set these `Vary` fields themselves. Applications using custom locale strategies must also account for any additional headers those strategies read.
 
 Server-side `fetch()` calls and API clients that send `Accept: */*` without `Sec-Fetch-Dest` also qualify. Keep the default mode or exclude API routes with `routeStrategies` if they should never redirect.
 

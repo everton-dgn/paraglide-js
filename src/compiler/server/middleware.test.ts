@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect, vi } from "vitest";
 import { createParaglide } from "../create-paraglide.js";
 import { newProject } from "@inlang/sdk";
 
@@ -1470,43 +1470,63 @@ test("navigation redirects preserve immutable callback headers without preferred
 	expect(downstream.headers.get("Vary")).toBeNull();
 });
 
-test.each([
-	"sync undefined",
-	"async undefined",
-	"object",
-	"error",
-	"consumed body",
-	"locked body",
-])("navigation redirects preserve callback returns: %s", async (kind) => {
-	const runtime = await createParaglide({
-		blob: await newProject({
-			settings: { baseLocale: "en", locales: ["en", "fr"] },
-		}),
-		strategy: ["preferredLanguage", "url"],
-	});
-	let downstream: unknown;
-	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-	if (kind === "object") downstream = { handled: true };
-	if (kind === "error") downstream = Response.error();
-	if (kind === "consumed body" || kind === "locked body") {
-		const response = new Response("ok");
-		if (kind === "consumed body") await response.text();
-		else reader = response.body!.getReader();
-		downstream = response;
-	}
-	try {
-		const response = await runtime.paraglideMiddleware(
-			new Request("https://example.com/about", {
-				headers: { Accept: "application/json", "Accept-Language": "fr" },
+test.each(
+	[
+		"sync undefined",
+		"async undefined",
+		"object",
+		"object with headers",
+		"error",
+		"consumed body",
+		"locked body",
+	].flatMap((kind) =>
+		[false, true].map((experimentalMiddlewareLocaleSplitting) => ({
+			kind,
+			experimentalMiddlewareLocaleSplitting,
+		}))
+	)
+)(
+	"navigation redirects preserve callback returns: $kind with locale splitting=$experimentalMiddlewareLocaleSplitting",
+	async ({ kind, experimentalMiddlewareLocaleSplitting }) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
 			}),
-			kind === "async undefined" ? async () => downstream : () => downstream,
-			{ redirect: "navigation" }
-		);
-		expect(response).toBe(downstream);
-	} finally {
-		reader?.releaseLock();
+			strategy: ["preferredLanguage", "url"],
+			experimentalMiddlewareLocaleSplitting,
+		});
+		let downstream: unknown;
+		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+		if (kind === "object") downstream = { handled: true };
+		if (kind === "object with headers") {
+			downstream = { headers: new Headers({ "Content-Type": "text/html" }) };
+		}
+		if (kind === "error") downstream = Response.error();
+		if (kind === "consumed body" || kind === "locked body") {
+			const response = new Response(
+				"<html><head></head><body>ok</body></html>",
+				{
+					headers: { "Content-Type": "text/html" },
+				}
+			);
+			if (kind === "consumed body") await response.text();
+			else reader = response.body!.getReader();
+			downstream = response;
+		}
+		try {
+			const response = await runtime.paraglideMiddleware(
+				new Request("https://example.com/about", {
+					headers: { Accept: "application/json", "Accept-Language": "fr" },
+				}),
+				kind === "async undefined" ? async () => downstream : () => downstream,
+				{ redirect: "navigation" }
+			);
+			expect(response).toBe(downstream);
+		} finally {
+			reader?.releaseLock();
+		}
 	}
-});
+);
 
 test.each([
 	["GET", "preferredLanguage"],
@@ -1945,6 +1965,34 @@ test("middleware works with multiple async custom strategies", async () => {
 
 	expect(userPrefCallCount).toBe(2);
 	expect(regionCallCount).toBe(1);
+});
+
+test("locale splitting accepts responses created before the global Response is replaced", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "de"] },
+		}),
+		strategy: ["globalVariable", "baseLocale"],
+		experimentalMiddlewareLocaleSplitting: true,
+	});
+	const NativeResponse = Response;
+	const downstream = new NativeResponse(
+		"<html><head></head><body>ok</body></html>",
+		{ headers: { "Content-Type": "text/html" } }
+	);
+	vi.stubGlobal("Response", class extends NativeResponse {});
+	try {
+		expect(downstream).not.toBeInstanceOf(Response);
+		const response = await runtime.paraglideMiddleware(
+			new Request("https://example.com/page"),
+			() => downstream
+		);
+		const html = await response.text();
+		expect(html).toContain("globalThis.__paraglide.ssr");
+		expect(html).toContain("<body>ok</body>");
+	} finally {
+		vi.unstubAllGlobals();
+	}
 });
 
 test("injected script reuses the Content-Security-Policy nonce when present and omits it otherwise", async () => {
