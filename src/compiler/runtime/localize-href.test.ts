@@ -158,6 +158,36 @@ test("classifies protocol-relative hrefs after URL whitespace normalization", as
 	expect(runtime.deLocalizeHref("/de/\\hello")).toBe("/\\hello");
 });
 
+test.each(["localizeHref", "deLocalizeHref"] as const)(
+	"%s does not interpret file path segments as ports",
+	async (helper) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "de"] },
+			}),
+			strategy: ["url", "baseLocale"],
+		});
+		runtime.overwriteGetLocale(() => "en");
+		runtime.overwriteGetUrlOrigin(() => "file:///app/");
+
+		for (const [prefix, expectedPrefix] of [
+			["///", "///"],
+			["/\\/", "///"],
+			["//localhost/", "///"],
+			["//server/", "//server/"],
+		]) {
+			const href = `${prefix}docs:80/page?q=1#part`;
+			const result =
+				helper === "localizeHref"
+					? runtime.localizeHref(href, { locale: "de" })
+					: runtime.deLocalizeHref(href);
+			const expected = `${expectedPrefix}${helper === "localizeHref" ? "de/" : ""}docs:80/page?q=1#part`;
+			expect(result).toBe(expected);
+			expect(new URL(result, "file:///app/").href).toBe(`file:${expected}`);
+		}
+	}
+);
+
 test("protocol-relative hrefs do not inherit the server fallback protocol", async () => {
 	vi.stubGlobal("window", undefined);
 	try {

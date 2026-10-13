@@ -179,7 +179,8 @@ function serializeProtocolRelativeHref(href, url, localized) {
 
 	// Otherwise leave the scheme to the page, including outside server middleware.
 	const result = localized.href.slice(localized.protocol.length);
-	if (localized.port) return result;
+	if (localized.port || url.protocol === "file:" || !url.hostname)
+		return result;
 
 	// URL drops default ports. Recover an explicit port from the original authority.
 	const authority = (
