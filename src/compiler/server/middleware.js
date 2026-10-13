@@ -121,17 +121,9 @@ export async function paraglideMiddleware(request, resolve, options) {
 		effectiveRequestUrl: url,
 	});
 	const locale = decision.locale;
-	// Custom server strategies run before built-in strategies, regardless of order.
-	const urlDecidesLocale =
-		options?.redirect === "navigation" &&
-		strategy[0] === "url" &&
-		!strategy.some((strat) => strat.startsWith("custom-")) &&
-		runtime.extractLocaleFromUrl(url) !== undefined;
 	const navigationVary = [
-		...(!urlDecidesLocale && strategy.includes("preferredLanguage")
-			? ["Accept-Language"]
-			: []),
-		...(!urlDecidesLocale && strategy.includes("cookie") ? ["Cookie"] : []),
+		...(strategy.includes("preferredLanguage") ? ["Accept-Language"] : []),
+		...(strategy.includes("cookie") ? ["Cookie"] : []),
 		"Accept",
 		"Sec-Fetch-Dest",
 	];
@@ -190,7 +182,6 @@ export async function paraglideMiddleware(request, resolve, options) {
 		options?.redirect === "navigation" &&
 		(request.method === "GET" || request.method === "HEAD") &&
 		strategy.includes("url") &&
-		(!urlDecidesLocale || decision.shouldRedirect) &&
 		response instanceof Response &&
 		response.status >= 200 &&
 		response.status <= 599
@@ -227,10 +218,6 @@ export async function paraglideMiddleware(request, resolve, options) {
 	// Only modify HTML responses
 	if (
 		runtime.experimentalMiddlewareLocaleSplitting &&
-		typeof response?.headers?.get === "function" &&
-		typeof response.text === "function" &&
-		!response.bodyUsed &&
-		!response.body?.locked &&
 		response.headers.get("Content-Type")?.includes("html")
 	) {
 		const body = await response.text();
