@@ -1,4 +1,6 @@
 import { test, expect } from "vitest";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { createParaglide } from "../create-paraglide.js";
 import { newProject } from "@inlang/sdk";
 import type { CompilerOptions } from "../compiler-options.js";
@@ -897,6 +899,97 @@ test("adds Vary to a resolved response with immutable headers", async () => {
 	expect(response.status).toBe(302);
 	expect(response.headers.get("Location")).toBe("https://example.com/login");
 	expect(response.headers.get("Vary")).toBe("Cookie");
+});
+
+test.each(["/page", "/redirect"])(
+	"preserves fetch response metadata when adding Vary for %s",
+	async (path) => {
+		const runtime = await createParaglide({
+			blob: await newProject({
+				settings: { baseLocale: "en", locales: ["en", "fr"] },
+			}),
+		});
+		const server = createServer((request, response) => {
+			if (request.url === "/redirect") {
+				response.writeHead(302, { Location: "/page" });
+				response.end();
+			} else {
+				response.writeHead(202, "Accepted", { Vary: "Accept-Encoding" });
+				response.end("page");
+			}
+		});
+		server.listen(0, "127.0.0.1");
+		await once(server, "listening");
+		try {
+			const address = server.address();
+			if (!address || typeof address === "string") {
+				throw new Error("Expected a TCP server address");
+			}
+			const origin = `http://127.0.0.1:${address.port}`;
+			const original = await fetch(`${origin}${path}`);
+			const metadata = {
+				url: `${origin}/page`,
+				redirected: path === "/redirect",
+				type: "basic",
+			};
+			expect(original).toMatchObject(metadata);
+			expect(() => original.headers.set("Vary", "Cookie")).toThrow(TypeError);
+			const response = await runtime.paraglideMiddleware(
+				new Request("https://example.com/page"),
+				() => original
+			);
+			const clone = response.clone();
+			const secondClone = clone.clone();
+
+			for (const result of [response, clone, secondClone]) {
+				expect
+					.soft({
+						url: result.url,
+						redirected: result.redirected,
+						type: result.type,
+					})
+					.toEqual(metadata);
+				expect(result.status).toBe(202);
+				expect(result.statusText).toBe("Accepted");
+				expect(result.headers.get("Vary")).toBe("Accept-Encoding, Cookie");
+				expect(await result.text()).toBe("page");
+			}
+			expect(original.headers.get("Vary")).toBe("Accept-Encoding");
+			expect(() => response.clone()).toThrow(TypeError);
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => (error ? reject(error) : resolve()));
+			});
+		}
+	}
+);
+
+test("allows overriding copied response properties", async () => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "fr"] },
+		}),
+	});
+	const response = await runtime.paraglideMiddleware(
+		new Request("https://example.com/page"),
+		() => Response.redirect("https://example.com/login", 302)
+	);
+
+	for (const result of [new Response(), response, response.clone()]) {
+		result.clone = () => new Response("instrumented");
+		expect(await result.clone().text()).toBe("instrumented");
+		expect(Reflect.deleteProperty(result, "clone")).toBe(true);
+
+		Object.defineProperties(result, {
+			url: { value: "https://example.com/upstream" },
+			redirected: { value: true },
+			type: { value: "basic" },
+		});
+		expect(result.url).toBe("https://example.com/upstream");
+		expect(result.redirected).toBe(true);
+		expect(result.type).toBe("basic");
+	}
 });
 
 test("preserves non-Response results from resolve with cookie negotiation", async () => {

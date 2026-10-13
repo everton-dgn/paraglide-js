@@ -275,10 +275,33 @@ function withVary(response, vary) {
 	// Responses from fetch() or Response.redirect() can have immutable headers.
 	const headers = new Headers(response.headers);
 	headers.set("Vary", value);
-	return new Response(response.body, {
+	const copy = new Response(response.body, {
 		status: response.status,
 		statusText: response.statusText,
 		headers,
+	});
+	return copyResponseMetadata(copy, response);
+}
+
+/**
+ * @param {Response} target
+ * @param {Response} source
+ * @returns {Response}
+ */
+function copyResponseMetadata(target, source) {
+	// ResponseInit omits fetch metadata, so clones need to retain it as well.
+	return Object.defineProperties(target, {
+		url: { value: source.url, configurable: true },
+		redirected: { value: source.redirected, configurable: true },
+		type: { value: source.type, configurable: true },
+		clone: {
+			configurable: true,
+			writable: true,
+			/** @this {Response} */
+			value() {
+				return copyResponseMetadata(Response.prototype.clone.call(this), this);
+			},
+		},
 	});
 }
 
