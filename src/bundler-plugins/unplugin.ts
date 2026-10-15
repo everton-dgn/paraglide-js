@@ -525,10 +525,14 @@ async function runCompilation(args: {
 
 // The return type preserves literal option types (`enforce: "pre"`, ...)
 // while `project` stays required on the input side.
+type UnpluginIntegrationOptions = Pick<CompilerOptions, "outputStructure"> & {
+	devErrorResponse?: boolean;
+};
+
 type UnpluginFactoryWithOptions = (
 	userArgs: ParaglidePluginOptions,
 	meta?: Parameters<UnpluginFactory<ParaglidePluginOptions>>[1],
-	defaults?: Pick<CompilerOptions, "outputStructure">
+	defaults?: UnpluginIntegrationOptions
 ) => ReturnType<UnpluginFactory<ParaglidePluginOptions>>;
 
 export const unpluginFactory: UnpluginFactoryWithOptions = (
@@ -844,6 +848,15 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 			},
 			configureServer(server) {
 				viteServer = server;
+				if (defaults?.devErrorResponse) {
+					server.middlewares.use((_request, response, next) => {
+						if (!viteError) return next();
+						response.statusCode = 500;
+						response.setHeader("Content-Type", "text/plain; charset=utf-8");
+						response.setHeader("Cache-Control", "no-store");
+						response.end(viteError.err.message);
+					});
+				}
 				server.ws.on("connection", (socket: WebSocketClient["socket"]) => {
 					if (viteError) socket.send(JSON.stringify(viteError));
 				});
