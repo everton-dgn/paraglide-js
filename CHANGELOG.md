@@ -1,5 +1,17 @@
 # @inlang/paraglide-js
 
+## 2.29.0
+
+### Minor Changes
+
+- 20c2ffe: Add the opt-in `devErrorResponse` Vite plugin option to return HTTP 500 while translation compilation or configuration is invalid, and resume serving after recovery.
+
+  Wait for pending watch compilations when Vite closes, preventing writes after shutdown and interference with the next server in the same process.
+
+### Patch Changes
+
+- da2ebab: Accept readonly URL inputs, including SvelteKit 3's `page.url`, in `localizeUrl` and `deLocalizeUrl`. URL-like inputs are normalized to native URLs so unmatched routes still return a mutable `URL`.
+
 ## 2.28.0
 
 ### Minor Changes
