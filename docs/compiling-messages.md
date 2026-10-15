@@ -103,6 +103,8 @@ a page opened directly on the plain-text error response needs a manual reload.
 Production builds keep their existing error behavior.
 
 Closing the Vite server waits for compilations already queued by the watcher.
+If compilation is still running when closing starts, its cache entries are
+discarded so the next start rebuilds from current inputs.
 Writes whose events have not reached the plugin before shutdown are picked up
 by the next build or development-server start.
 

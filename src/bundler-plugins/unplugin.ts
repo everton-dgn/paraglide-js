@@ -585,6 +585,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 	let isClosed = false;
 	let pendingCompilation: Promise<void> | undefined;
 	const pendingWatchPaths = new Set<string>();
+	const pendingCompilationCachePaths = new Set<string>();
 	// Options from the most recent successful resolution — reused by input
 	// events that cannot have changed them.
 	let lastOptions: CompilerOptions | undefined;
@@ -736,6 +737,9 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 			}
 
 			clearReadFiles();
+			pendingCompilationCachePaths.add(
+				getPersistentCachePath(args, outputStructure)
+			);
 			await compileAndUpdateState({
 				state,
 				compilerOptions: args,
@@ -833,7 +837,23 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 						}
 					}
 				} finally {
-					compiling = false;
+					try {
+						if (isClosed) {
+							// Inputs can change after compile reads them but before its
+							// digest is taken. Once closing starts, watcher events can
+							// no longer repair that mismatch, so neither warm nor cold
+							// restarts may reuse caches from this queue.
+							state.previousInputsDigest = undefined;
+							for (const cachePath of pendingCompilationCachePaths) {
+								await (userArgs.fs ?? nodeFs).promises.rm(cachePath, {
+									force: true,
+								});
+							}
+						}
+					} finally {
+						pendingCompilationCachePaths.clear();
+						compiling = false;
+					}
 				}
 			})();
 			return pendingCompilation;

@@ -224,6 +224,94 @@ test.each(["settings", "config"])(
 	}
 );
 
+test.each(
+	["same instance", "new instance", "cold restart"].flatMap((restart) =>
+		[true, false].map((notifyLateChange) => ({ restart, notifyLateChange }))
+	)
+)(
+	"rebuilds after a shutdown input race: $restart, late event=$notifyLateChange",
+	async ({ restart, notifyLateChange }) => {
+		process.env.NODE_ENV = "development";
+		const { workspace, projectDir, outdir } = await createProjectFixture();
+		let notifyCompiled!: () => void;
+		let releaseCompilation!: () => void;
+		const compiled = new Promise<void>((resolve) => {
+			notifyCompiled = resolve;
+		});
+		const released = new Promise<void>((resolve) => {
+			releaseCompilation = resolve;
+		});
+		let shouldBlock = false;
+		let compilationCount = 0;
+		vi.doMock("../compiler/compile.js", async (importOriginal) => {
+			const original =
+				await importOriginal<typeof import("../compiler/compile.js")>();
+			return {
+				...original,
+				compile: async (...args: Parameters<typeof original.compile>) => {
+					compilationCount++;
+					const result = await original.compile(...args);
+					if (shouldBlock) {
+						// Pause after the input has been consumed, before the plugin
+						// re-reads it to compute the cached digest.
+						notifyCompiled();
+						await released;
+					}
+					return result;
+				},
+			};
+		});
+		let { paraglideVitePlugin } = await import("./vite.js");
+		let plugin = paraglideVitePlugin({ project: projectDir, outdir }) as any;
+		setViteRoot(plugin, workspace);
+		let pending: Promise<void> | undefined;
+		try {
+			await plugin.buildStart.call(mockContext);
+			const file = path.join(projectDir, "settings.json");
+			const original = await realFs.promises.readFile(file, "utf8");
+			await realFs.promises.writeFile(
+				file,
+				JSON.stringify({ ...JSON.parse(original), baseLocale: "de" })
+			);
+			shouldBlock = true;
+			pending = plugin.watchChange.call(mockContext, file);
+			await compiled;
+			const closing = plugin.closeBundle.call(mockContext);
+			await realFs.promises.writeFile(file, original);
+			const lateChange = notifyLateChange
+				? plugin.watchChange.call(mockContext, file)
+				: undefined;
+			releaseCompilation();
+			await Promise.all([pending, closing, lateChange]);
+			shouldBlock = false;
+			// Shutdown drains the existing work without forcing another compile.
+			expect(compilationCount).toBe(2);
+			const runtime = path.join(outdir, "runtime.js");
+			expect(await realFs.promises.readFile(runtime, "utf8")).toContain(
+				'baseLocale = "de"'
+			);
+			if (restart === "cold restart") {
+				// Drop the warm state so only the on-disk cache can be reused.
+				vi.resetModules();
+				({ paraglideVitePlugin } = await import("./vite.js"));
+			}
+			if (restart !== "same instance") {
+				plugin = paraglideVitePlugin({ project: projectDir, outdir }) as any;
+				setViteRoot(plugin, workspace);
+			}
+			await plugin.buildStart.call(mockContext);
+			expect(compilationCount).toBe(3);
+			expect(await realFs.promises.readFile(runtime, "utf8")).toContain(
+				'baseLocale = "en"'
+			);
+		} finally {
+			releaseCompilation();
+			await pending;
+			vi.doUnmock("../compiler/compile.js");
+		}
+	}
+);
+
 async function connectViteClient(server: ViteDevServer) {
 	const url = new URL(server.resolvedUrls!.local[0]!);
 	url.protocol = "ws:";
