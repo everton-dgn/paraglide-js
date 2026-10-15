@@ -123,6 +123,61 @@ test("import statements in JSDoc examples survive in the generated runtime", () 
 	expect(runtime).not.toMatch(/^\s*import\s/m);
 });
 
+test.each(["JSDoc", "declarations"])(
+	"URL helpers accept readonly URLs through generated %s",
+	async (mode) => {
+		let project = await typescriptProject({
+			useInMemoryFileSystem: true,
+			compilerOptions: superStrictRuleOutAnyErrorTsSettings,
+		});
+		project.createSourceFile(
+			"./runtime.js",
+			createRuntimeFile({
+				baseLocale: "en",
+				locales: ["en", "de"],
+				compilerOptions: defaultCompilerOptions,
+			})
+		);
+		if (mode === "declarations") {
+			let declaration = "";
+			project.createProgram().emit(
+				undefined,
+				(name, content) => {
+					if (name.endsWith("runtime.d.ts")) declaration = content;
+				},
+				undefined,
+				true
+			);
+			expect(declaration).not.toBe("");
+			project = await typescriptProject({
+				useInMemoryFileSystem: true,
+				compilerOptions: superStrictRuleOutAnyErrorTsSettings,
+			});
+			project.createSourceFile("./runtime.d.ts", declaration);
+		}
+		project.createSourceFile(
+			"./consumer.ts",
+			`import { localizeUrl, deLocalizeUrl } from "./runtime.js";
+type ReadonlyURL = Readonly<Omit<URL, "searchParams"> & {
+  searchParams: Omit<URLSearchParams, "append" | "delete" | "set" | "sort">;
+}>;
+declare const page: { url: ReadonlyURL };
+for (const input of [page.url, new URL("https://example.com"), "https://example.com"]) {
+  localizeUrl(input, { locale: "de" }) satisfies URL;
+  deLocalizeUrl(input) satisfies URL;
+}
+// @ts-expect-error - URL-like objects need an href
+deLocalizeUrl({ pathname: "/about" });
+// @ts-expect-error - href must be a string
+localizeUrl({ href: 123 }, { locale: "de" });`
+		);
+		const diagnostics = ts
+			.getPreEmitDiagnostics(project.createProgram())
+			.map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
+		expect(diagnostics).toEqual([]);
+	}
+);
+
 test("runtime type", async () => {
 	const project = await typescriptProject({
 		useInMemoryFileSystem: true,

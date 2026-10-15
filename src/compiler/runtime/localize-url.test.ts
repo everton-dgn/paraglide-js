@@ -2,6 +2,64 @@ import { test, expect } from "vitest";
 import { createParaglide } from "../create-paraglide.js";
 import { newProject } from "@inlang/sdk";
 
+test.each([
+	{ name: "default patterns", urlPatterns: undefined },
+	{
+		name: "custom patterns",
+		urlPatterns: [
+			{
+				pattern: "/about",
+				localized: [
+					["en", "/about"],
+					["de", "/de/ueber"],
+				] as [string, string][],
+			},
+		],
+	},
+])("accepts readonly URL inputs with $name", async ({ urlPatterns }) => {
+	const runtime = await createParaglide({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "de"] },
+		}),
+		strategy: ["url"],
+		urlPatterns,
+	});
+
+	// Match SvelteKit 3's page.url type, including readonly search parameters.
+	const input: Readonly<
+		Omit<URL, "searchParams"> & {
+			searchParams: Omit<URLSearchParams, "append" | "delete" | "set" | "sort">;
+		}
+	> = new URL("https://example.com/about?q=one&q=two#section");
+	const before = input.href;
+	const localized = runtime.localizeUrl(input, { locale: "de" });
+	expect(localized.href).toBe(
+		urlPatterns
+			? "https://example.com/de/ueber?q=one&q=two#section"
+			: "https://example.com/de/about?q=one&q=two#section"
+	);
+	expect(
+		runtime.deLocalizeUrl(Object.freeze({ href: localized.href })).href
+	).toBe(before);
+	expect(input.href).toBe(before);
+
+	// A URL-like object must never leak out of the unmatched-pattern fallback.
+	const unmatched = Object.freeze({
+		href: "https://example.com/assets/?q=one&q=two#section",
+	});
+	for (const result of [
+		runtime.localizeUrl(unmatched, { locale: "en" }),
+		runtime.deLocalizeUrl(unmatched),
+	]) {
+		expect(result).toBeInstanceOf(URL);
+		expect(result.href).toBe(unmatched.href);
+		result.searchParams.set("q", "changed");
+		expect(unmatched.href).toBe(
+			"https://example.com/assets/?q=one&q=two#section"
+		);
+	}
+});
+
 test("pathname based localization", async () => {
 	const runtime = await createParaglide({
 		blob: await newProject({
