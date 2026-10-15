@@ -525,10 +525,14 @@ async function runCompilation(args: {
 
 // The return type preserves literal option types (`enforce: "pre"`, ...)
 // while `project` stays required on the input side.
+type UnpluginIntegrationOptions = Pick<CompilerOptions, "outputStructure"> & {
+	devErrorResponse?: boolean;
+};
+
 type UnpluginFactoryWithOptions = (
 	userArgs: ParaglidePluginOptions,
 	meta?: Parameters<UnpluginFactory<ParaglidePluginOptions>>[1],
-	defaults?: Pick<CompilerOptions, "outputStructure">
+	defaults?: UnpluginIntegrationOptions
 ) => ReturnType<UnpluginFactory<ParaglidePluginOptions>>;
 
 export const unpluginFactory: UnpluginFactoryWithOptions = (
@@ -578,7 +582,10 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 	let hadActiveConfig = false;
 	// Watch-rebuild serialization state (see watchChange).
 	let compiling = false;
+	let isClosed = false;
+	let pendingCompilation: Promise<void> | undefined;
 	const pendingWatchPaths = new Set<string>();
+	const pendingCompilationCachePaths = new Set<string>();
 	// Options from the most recent successful resolution — reused by input
 	// events that cannot have changed them.
 	let lastOptions: CompilerOptions | undefined;
@@ -730,6 +737,9 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 			}
 
 			clearReadFiles();
+			pendingCompilationCachePaths.add(
+				getPersistentCachePath(args, outputStructure)
+			);
 			await compileAndUpdateState({
 				state,
 				compilerOptions: args,
@@ -760,6 +770,8 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 		name: PLUGIN_NAME,
 		enforce: "pre",
 		async buildStart() {
+			if (isClosed) clearParaglideConfigCache({ projectDir: getProjectDir() });
+			isClosed = false;
 			addWatchFile = this.addWatchFile?.bind(this);
 			try {
 				const loaded = await loadActiveConfig();
@@ -806,25 +818,49 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 				clearViteError();
 			}
 		},
-		async watchChange(path) {
+		watchChange(path) {
+			if (isClosed) return pendingCompilation;
 			// Serialize rebuilds: bundlers may deliver several watchChange
 			// events concurrently (webpack fires once per modified file).
 			// Every path is queued — a config event must never be starved by
 			// later input events.
 			pendingWatchPaths.add(nodeNormalizePath(path));
-			if (compiling) return;
+			if (compiling) return pendingCompilation;
 			compiling = true;
-			try {
-				while (pendingWatchPaths.size > 0) {
-					const batch = [...pendingWatchPaths];
-					pendingWatchPaths.clear();
-					for (const current of batch) {
-						await performWatchRecompile(current);
+			pendingCompilation = (async () => {
+				try {
+					while (pendingWatchPaths.size > 0) {
+						const batch = [...pendingWatchPaths];
+						pendingWatchPaths.clear();
+						for (const current of batch) {
+							await performWatchRecompile(current);
+						}
+					}
+				} finally {
+					try {
+						if (isClosed) {
+							// Inputs can change after compile reads them but before its
+							// digest is taken. Once closing starts, watcher events can
+							// no longer repair that mismatch, so neither warm nor cold
+							// restarts may reuse caches from this queue.
+							state.previousInputsDigest = undefined;
+							for (const cachePath of pendingCompilationCachePaths) {
+								await (userArgs.fs ?? nodeFs).promises.rm(cachePath, {
+									force: true,
+								});
+							}
+						}
+					} finally {
+						pendingCompilationCachePaths.clear();
+						compiling = false;
 					}
 				}
-			} finally {
-				compiling = false;
-			}
+			})();
+			return pendingCompilation;
+		},
+		closeBundle() {
+			isClosed = true;
+			return pendingCompilation;
 		},
 		vite: {
 			config: {
@@ -844,6 +880,15 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 			},
 			configureServer(server) {
 				viteServer = server;
+				if (defaults?.devErrorResponse) {
+					server.middlewares.use((_request, response, next) => {
+						if (!viteError) return next();
+						response.statusCode = 500;
+						response.setHeader("Content-Type", "text/plain; charset=utf-8");
+						response.setHeader("Cache-Control", "no-store");
+						response.end(viteError.err.message);
+					});
+				}
 				server.ws.on("connection", (socket: WebSocketClient["socket"]) => {
 					if (viteError) socket.send(JSON.stringify(viteError));
 				});
