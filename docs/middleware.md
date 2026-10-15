@@ -118,10 +118,12 @@ In runtimes that can clone the request, the callback `request.url` will also ref
 
 ### SvelteKit
 
+For SvelteKit 2, import `Handle` from `@sveltejs/kit` instead of `@sveltejs/kit/hooks`.
+
 ```ts
 // src/hooks.server.ts
 import { paraglideMiddleware } from "./paraglide/server.js";
-import type { Handle } from "@sveltejs/kit";
+import type { Handle } from "@sveltejs/kit/hooks";
 
 export const handle: Handle = ({ event, resolve }) => {
 	return paraglideMiddleware(event.request, ({ request, locale }) => {
