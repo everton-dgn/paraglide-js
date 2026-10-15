@@ -600,7 +600,7 @@ which provides more precise control over URL handling.
 
 > **deLocalizeUrl**(`url`): `URL`
 
-Defined in: [runtime/localize-url.js:220](https://github.com/opral/paraglide-js/tree/main/src/compiler/runtime/localize-url.js)
+Defined in: [runtime/localize-url.js:223](https://github.com/opral/paraglide-js/tree/main/src/compiler/runtime/localize-url.js)
 
 Low-level URL de-localization function, primarily used in server contexts.
 
@@ -615,9 +615,9 @@ a more convenient API with relative paths.
 
 #### url
 
-The URL to de-localize. If string, must be absolute.
+The URL to de-localize. Accepts readonly URL objects. If string, must be absolute.
 
-`string` | `URL`
+`string` | \{ `href`: `string`; \}
 
 ### Returns
 
@@ -1195,9 +1195,9 @@ a more convenient API with relative paths and automatic locale detection.
 
 #### url
 
-The URL to localize. If string, must be absolute.
+The URL to localize. Accepts readonly URL objects. If string, must be absolute.
 
-`string` | `URL`
+`string` | \{ `href`: `string`; \}
 
 #### options?
 
