@@ -582,6 +582,8 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 	let hadActiveConfig = false;
 	// Watch-rebuild serialization state (see watchChange).
 	let compiling = false;
+	let isClosed = false;
+	let pendingCompilation: Promise<void> | undefined;
 	const pendingWatchPaths = new Set<string>();
 	// Options from the most recent successful resolution — reused by input
 	// events that cannot have changed them.
@@ -764,6 +766,8 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 		name: PLUGIN_NAME,
 		enforce: "pre",
 		async buildStart() {
+			if (isClosed) clearParaglideConfigCache({ projectDir: getProjectDir() });
+			isClosed = false;
 			addWatchFile = this.addWatchFile?.bind(this);
 			try {
 				const loaded = await loadActiveConfig();
@@ -810,25 +814,33 @@ export const unpluginFactory: UnpluginFactoryWithOptions = (
 				clearViteError();
 			}
 		},
-		async watchChange(path) {
+		watchChange(path) {
+			if (isClosed) return pendingCompilation;
 			// Serialize rebuilds: bundlers may deliver several watchChange
 			// events concurrently (webpack fires once per modified file).
 			// Every path is queued — a config event must never be starved by
 			// later input events.
 			pendingWatchPaths.add(nodeNormalizePath(path));
-			if (compiling) return;
+			if (compiling) return pendingCompilation;
 			compiling = true;
-			try {
-				while (pendingWatchPaths.size > 0) {
-					const batch = [...pendingWatchPaths];
-					pendingWatchPaths.clear();
-					for (const current of batch) {
-						await performWatchRecompile(current);
+			pendingCompilation = (async () => {
+				try {
+					while (pendingWatchPaths.size > 0) {
+						const batch = [...pendingWatchPaths];
+						pendingWatchPaths.clear();
+						for (const current of batch) {
+							await performWatchRecompile(current);
+						}
 					}
+				} finally {
+					compiling = false;
 				}
-			} finally {
-				compiling = false;
-			}
+			})();
+			return pendingCompilation;
+		},
+		closeBundle() {
+			isClosed = true;
+			return pendingCompilation;
 		},
 		vite: {
 			config: {

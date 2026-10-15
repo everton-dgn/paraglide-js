@@ -102,6 +102,10 @@ still receive the error overlay. Requests resume after a successful compilation;
 a page opened directly on the plain-text error response needs a manual reload.
 Production builds keep their existing error behavior.
 
+Closing the Vite server waits for compilations already queued by the watcher.
+Writes whose events have not reached the plugin before shutdown are picked up
+by the next build or development-server start.
+
 #### Experimental per-locale builds
 
 The Vite 8+ backend builds one independent Rolldown client environment per
