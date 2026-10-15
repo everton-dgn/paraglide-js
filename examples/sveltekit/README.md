@@ -70,33 +70,37 @@ See https://svelte.dev/docs/kit/accessibility#The-lang-attribute for more inform
 
 #### Add the `paraglideMiddleware()` to `src/hooks.server.ts`
 
+The hook type imports below use SvelteKit 3. For SvelteKit 2, import `Handle` and `Reroute` from `@sveltejs/kit` instead.
+
 ```typescript
-import type { Handle } from '@sveltejs/kit';
+import type { Handle } from '@sveltejs/kit/hooks';
 import { paraglideMiddleware } from '$lib/paraglide/server';
 import { getTextDirection } from '$lib/paraglide/runtime';
 
 // creating a handle to use the paraglide middleware
 const paraglideHandle: Handle = ({ event, resolve }) =>
 	paraglideMiddleware(event.request, ({ request: localizedRequest, locale }) => {
-		event.request = localizedRequest;
-		return resolve(event, {
-			transformPageChunk: ({ html }) => {
-				return html
-					.replace('%lang%', locale)
-					.replace('%dir%', getTextDirection(locale));
+		return resolve(
+			{ ...event, request: localizedRequest },
+			{
+				transformPageChunk: ({ html }) => {
+					return html.replace('%lang%', locale).replace('%dir%', getTextDirection(locale));
+				}
 			}
-		});
+		);
 	});
 
 export const handle: Handle = paraglideHandle;
 ```
+
+Pass the middleware request to `resolve` on a copy of the event. SvelteKit 3 makes `event.request` readonly, so assigning to it is not supported.
 
 #### Add a reroute hook in `src/hooks.ts`
 
 IMPORTANT: The `reroute()` function must be exported from the `src/hooks.ts` file, not `src/hooks.server.ts`.
 
 ```typescript
-import type { Reroute } from '@sveltejs/kit';
+import type { Reroute } from '@sveltejs/kit/hooks';
 import { deLocalizeUrl } from '$lib/paraglide/runtime';
 
 export const reroute: Reroute = (request) => {
