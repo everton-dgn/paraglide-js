@@ -46,6 +46,43 @@ function hasFallbackCycle(
 	return false;
 }
 
+test("locale-modules retain language-grouped static text helpers", async () => {
+	const project = await loadProjectInMemory({
+		blob: await newProject({
+			settings: { baseLocale: "en", locales: ["en", "de"] },
+		}),
+	});
+	await insertBundleNested(
+		project.db,
+		createBundleNested({
+			id: "literal_layout",
+			declarations: [],
+			messages: ["en", "de"].map((locale) => ({
+				locale,
+				variants: [
+					{
+						pattern: [
+							{ type: "text" as const, value: `layout text ${locale}` },
+						],
+					},
+				],
+			})),
+		})
+	);
+	const output = await compileProject({
+		project,
+		compilerOptions: { outputStructure: "locale-modules" },
+	});
+	expect(output["messages/_index.js"]).toContain(
+		"return __de.literal_layout(inputs)"
+	);
+	expect(output["messages/_index.js"]).not.toContain(
+		'return /** @type {LocalizedString} */ ("layout text de")'
+	);
+	expect(output["messages/de.js"]).toContain("export const literal_layout =");
+	await project.close();
+});
+
 test("emitGitignore", async () => {
 	const project = await loadProjectInMemory({
 		blob: await newProject({
@@ -119,6 +156,86 @@ test("marks tree-shakeable generated message layouts as side-effect-free", async
 		type: "module",
 		sideEffects: false,
 	});
+});
+
+test("inlines static text and retains only fallback helpers under strict checkJs", async () => {
+	const project = await loadProjectInMemory({
+		blob: await newProject({
+			settings: {
+				baseLocale: "en",
+				locales: ["en", "de", "de-AT"],
+			},
+		}),
+	});
+
+	await insertBundleNested(
+		project.db,
+		createBundleNested({
+			id: "plain_greeting",
+			messages: [
+				{
+					locale: "en",
+					variants: [{ pattern: [{ type: "text", value: "Hello" }] }],
+				},
+				{
+					locale: "de",
+					variants: [{ pattern: [{ type: "text", value: "Hallo" }] }],
+				},
+			],
+		})
+	);
+
+	const output = await compileProject({
+		project,
+		compilerOptions: { outputStructure: "message-modules" },
+	});
+	const messageModule = output["messages/plain_greeting.js"]!;
+
+	// The base locale is returned inline, while de-AT's missing-locale alias
+	// still needs the de message function.
+	expect(messageModule).not.toContain("const en_plain_greeting =");
+	expect(messageModule).toContain("const de_plain_greeting =");
+	expect(messageModule).toMatch(
+		/const de_at\d*_plain_greeting = de_plain_greeting;/
+	);
+
+	const tsProject = await typescriptProject({
+		useInMemoryFileSystem: true,
+		compilerOptions: {
+			outDir: "dist",
+			declaration: true,
+			allowJs: true,
+			checkJs: true,
+			noImplicitAny: true,
+			noUnusedLocals: true,
+			noUnusedParameters: true,
+			noImplicitReturns: true,
+			noImplicitThis: true,
+			noUncheckedIndexedAccess: true,
+			noPropertyAccessFromIndexSignature: true,
+			module: ts.ModuleKind.Node16,
+			strict: true,
+		},
+	});
+	for (const [fileName, code] of Object.entries(output)) {
+		if (fileName.endsWith(".js") || fileName.endsWith(".ts")) {
+			tsProject.createSourceFile(fileName, code);
+		}
+	}
+	const diagnostics = ts
+		.getPreEmitDiagnostics(tsProject.createProgram())
+		.filter(
+			(d) =>
+				!d.messageText.toString().includes("Cannot find module 'async_hooks'")
+		);
+	expect(diagnostics).toEqual([]);
+
+	const { m } = await importCode(
+		await bundleCode(output, `export * as m from "./paraglide/messages.js"`)
+	);
+	expect(m.plain_greeting({}, { locale: "en" })).toBe("Hello");
+	expect(m.plain_greeting({}, { locale: "de" })).toBe("Hallo");
+	expect(m.plain_greeting({}, { locale: "de-AT" })).toBe("Hallo");
 });
 
 test("emitPrettierIgnore", async () => {
@@ -1474,7 +1591,7 @@ describe.each([
 			});
 
 			expect(Object.values(output).join("\n")).toContain(
-				'registry.number("en", i?.count, { maximumFractionDigits: 1 })'
+				'registry.number("en", i?.count, { maximumFractionDigits: 1 }, true)'
 			);
 
 			const tsProject = await typescriptProject({

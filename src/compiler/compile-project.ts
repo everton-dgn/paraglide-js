@@ -74,6 +74,7 @@ export const compileProject = async (args: {
 		compileBundle({
 			bundle,
 			fallbackMap,
+			inlineMessages: optionsWithDefaults.outputStructure === "message-modules",
 			messageReferenceExpression: outputStructure.messageReferenceExpression,
 			settings,
 			experimentalMiddlewareLocaleSplitting:

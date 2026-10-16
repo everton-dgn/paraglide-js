@@ -92,7 +92,7 @@ Messages are stored in `messages/{locale}.json`:
 
 ```json
 {
-  "greeting": "Hello {name}!"
+	"greeting": "Hello {name}!"
 }
 ```
 
@@ -100,7 +100,7 @@ Messages are stored in `messages/{locale}.json`:
 
 ```json
 {
-  "greeting": "Hallo {name}!"
+	"greeting": "Hallo {name}!"
 }
 ```
 
@@ -113,8 +113,8 @@ Add locales in `project.inlang/settings.json`:
 
 ```json
 {
-  "baseLocale": "en",
-  "locales": ["en", "de", "fr"]
+	"baseLocale": "en",
+	"locales": ["en", "de", "fr"]
 }
 ```
 
@@ -130,7 +130,7 @@ Flat random key (recommended):
 
 ```json
 {
-  "calm_green_otter": "User Profile"
+	"calm_green_otter": "User Profile"
 }
 ```
 
@@ -142,7 +142,7 @@ Existing nested keys are also supported:
 
 ```json
 {
-  "user": { "profile": { "title": "User Profile" } }
+	"user": { "profile": { "title": "User Profile" } }
 }
 ```
 
@@ -154,18 +154,75 @@ See [message keys](./message-keys) for the key-naming rationale and structure op
 
 ### Dynamic messages
 
-Specify messages beforehand to preserve tree-shaking:
+A runtime string from an API or JSON does not change which messages your UI supports. Define those messages explicitly so the bundler can remove the rest of the catalog:
 
 ```ts
-const messages = {
-  greeting: m.greeting,
-  goodbye: m.goodbye,
-};
+import { m } from "./paraglide/messages.js";
 
-messages["greeting"](); // "Hello World!"
+const statusMessages = new Map([
+	["pending", m.order_pending],
+	["paid", m.order_paid],
+	["failed", m.order_failed],
+]);
+
+const message = statusMessages.get(status) ?? m.order_unknown;
+message();
 ```
 
-Referencing each message directly also lets [`inlang check`](./checking-translations#unused-messages) find unused messages. A key built at runtime, such as ``m[`${name}_label`]``, can't be resolved.
+Use typed wrapper functions in the map when messages need different inputs. Unknown values should use a fallback. Avoid `m[name]()` or ``m[`${name}_label`]()``: a bundler may retain every message because it cannot know which key will be used. Referencing each message directly also lets [`inlang check`](./checking-translations#unused-messages) find unused messages.
+
+#### ESLint and Oxlint
+
+During interactive `paraglide-js init`, you can opt into ESLint or Oxlint message linting. For coding agents or CI, choose explicitly:
+
+```sh
+npx @inlang/paraglide-js init --yes --lint eslint
+# Alternatively: --lint oxlint
+```
+
+Init adds a dedicated `lint:i18n` script and `eslint.paraglide.config.mjs` or `.oxlintrc.paraglide.json`, preserving existing lint configurations and scripts. Install dependencies, then run `npm run lint:i18n`. The generated ESLint config handles JavaScript and TypeScript with a syntax-only parser; framework component files still need their existing framework lint integration. With no `--lint` choice, unattended init skips lint setup.
+
+`--yes` (also `--non-interactive`) never opens prompts. The default project and output paths are `./project.inlang` and `./src/paraglide`; override them with `--project` and `--outdir`. It reuses existing projects, auto-detects Vite or adds a build-time compile command, enables TypeScript `allowJs` where needed while preserving comments, and retains the existing default translation check setup (`--no-check` skips it). Editor recommendations and machine translation are off unless explicitly selected. `--allow-dirty` is required for uncommitted changes. `--no-compile` defers the initial compile until dependencies are installed. Init does not install dependencies itself. Invalid options/configuration conflicts fail with a nonzero exit status; compilation failures also fail in unattended mode and report that setup files have already been written.
+
+The optional plugin reports dynamic catalog access and whole-catalog spread/rest copies. It allows static access such as `m.greeting()` and `m["user.profile.title"]()`, plus indexing an application-owned map. The rule does not guess the keys the UI supports and has no automatic fix.
+
+With ESLint 9 or 10, add it to your existing flat config:
+
+```js
+// eslint.config.js
+import paraglide from "@inlang/paraglide-js/eslint";
+
+export default [
+	{
+		plugins: { paraglide },
+		rules: { "paraglide/no-dynamic-message-access": "error" },
+	},
+];
+```
+
+Keep your existing language/parser configuration for TypeScript or framework files. ESLint is an optional peer dependency; applications that do not use the plugin do not need to install it.
+
+Oxlint can run the same plugin through its JavaScript plugin API (tested with Oxlint 1.88):
+
+```json
+{
+	"jsPlugins": [
+		{ "name": "paraglide", "specifier": "@inlang/paraglide-js/eslint" }
+	],
+	"rules": { "paraglide/no-dynamic-message-access": "error" }
+}
+```
+
+By default, the rule recognizes imports ending in `paraglide/messages` or `paraglide/messages.js`, including aliases such as `$lib/paraglide/messages`. For a custom output directory or re-export module, add the exact import specifier:
+
+```js
+"paraglide/no-dynamic-message-access": [
+  "error",
+  { messageModules: ["@app/translations", "./generated/messages.js"] },
+]
+```
+
+Generated lint configs use `messageModuleDirectories` to recognize the output folder name (for example, `["i18n"]` for `./src/i18n`). For unusual aliases or re-export modules, `messageModules` adds exact import specifiers. The same rule options work in Oxlint. This is a syntax/scope check, not a guarantee about the final bundle: it follows local `const` aliases but does not evaluate key expressions, resolve re-exports across files, or follow a catalog passed through function arguments. Configure each import path used for the catalog. Oxlint's JavaScript plugin support is still alpha and does not yet support custom framework parsers; use ESLint with the relevant parser for those files.
 
 ### Type-safe localized strings
 

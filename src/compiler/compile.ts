@@ -60,6 +60,7 @@ export async function compile(
 				fs,
 			});
 
+			let failed = false;
 			try {
 				const output = await compileProject({
 					compilerOptions: withDefaultOptions,
@@ -82,8 +83,19 @@ export async function compile(
 				}
 
 				return { outputHashes };
+			} catch (error) {
+				failed = true;
+				throw error;
 			} finally {
-				await project.close();
+				try {
+					await project.close();
+				} catch (error) {
+					// Closing must fail an otherwise successful compilation.
+					// eslint-disable-next-line no-unsafe-finally
+					if (!failed) throw error;
+					// Keep the actionable compile/write error if cleanup also fails.
+					logger.warn("Failed to close project:", error);
+				}
 			}
 		} catch (e) {
 			// release the lock in case of an error

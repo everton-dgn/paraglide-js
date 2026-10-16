@@ -51,7 +51,7 @@ export function generateOutput(
 
 			if (!compiledMessage) {
 				needsFallback.push(locale);
-			} else {
+			} else if (!compiledBundle.unreferencedMessageLocales?.includes(locale)) {
 				messages.push(
 					`const ${safeLocale}_${safeModuleId} = ${compiledMessage.code}`
 				);

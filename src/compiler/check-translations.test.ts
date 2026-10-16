@@ -132,40 +132,44 @@ test("config accepts checkTranslations as a boolean", () => {
 	).toBe(false);
 });
 
-test("failed checks preserve output, close the project, and release the compilation lock", async () => {
-	const invalid = await createProject({ en: { hello: "Hello" } });
-	const valid = await createProject({
-		en: { hello: "Hello" },
-		pt: { hello: "Olá" },
-		es: { hello: "Hola" },
-	});
-	const close = invalid.close;
-	const closeSpy = vi.spyOn(invalid, "close").mockImplementation(async () => {
-		await close();
-		projects.splice(projects.indexOf(invalid), 1);
-	});
-	vi.spyOn(sdk, "loadProjectFromDirectory")
-		.mockResolvedValueOnce({
-			...invalid,
-			errors: { get: async () => [...(await invalid.errors.get())] },
-		})
-		.mockResolvedValueOnce({
-			...valid,
-			errors: { get: async () => [...(await valid.errors.get())] },
+test.each([false, true])(
+	"failed checks preserve output and release the lock when close also fails: %s",
+	async (closeFails) => {
+		const invalid = await createProject({ en: { hello: "Hello" } });
+		const valid = await createProject({
+			en: { hello: "Hello" },
+			pt: { hello: "Olá" },
+			es: { hello: "Hola" },
 		});
-	const { fs, vol } = memfs({ "/output/messages.js": "previous output" });
-	const options = {
-		...strictOptions,
-		project: "/project.inlang",
-		outdir: "/output",
-		fs: fs as unknown as typeof import("node:fs"),
-	};
-	await expect(compile(options)).rejects.toThrow(/missing-translation/);
-	expect(closeSpy).toHaveBeenCalledOnce();
-	expect(vol.toJSON()).toEqual({ "/output/messages.js": "previous output" });
-	await expect(compile(options)).resolves.toHaveProperty("outputHashes");
-	projects.splice(projects.indexOf(valid), 1);
-	expect(fs.readFileSync("/output/messages.js", "utf8")).not.toBe(
-		"previous output"
-	);
-});
+		const close = invalid.close;
+		const closeSpy = vi.spyOn(invalid, "close").mockImplementation(async () => {
+			await close();
+			projects.splice(projects.indexOf(invalid), 1);
+			if (closeFails) throw new Error("cleanup failed");
+		});
+		vi.spyOn(sdk, "loadProjectFromDirectory")
+			.mockResolvedValueOnce({
+				...invalid,
+				errors: { get: async () => [...(await invalid.errors.get())] },
+			})
+			.mockResolvedValueOnce({
+				...valid,
+				errors: { get: async () => [...(await valid.errors.get())] },
+			});
+		const { fs, vol } = memfs({ "/output/messages.js": "previous output" });
+		const options = {
+			...strictOptions,
+			project: "/project.inlang",
+			outdir: "/output",
+			fs: fs as unknown as typeof import("node:fs"),
+		};
+		await expect(compile(options)).rejects.toThrow(/missing-translation/);
+		expect(closeSpy).toHaveBeenCalledOnce();
+		expect(vol.toJSON()).toEqual({ "/output/messages.js": "previous output" });
+		await expect(compile(options)).resolves.toHaveProperty("outputHashes");
+		projects.splice(projects.indexOf(valid), 1);
+		expect(fs.readFileSync("/output/messages.js", "utf8")).not.toBe(
+			"previous output"
+		);
+	}
+);

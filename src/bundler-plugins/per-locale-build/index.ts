@@ -31,8 +31,23 @@ export function createPerLocaleBuildPlugins(args: {
 			// an explicitly configured root here so it is available in time;
 			// `configResolved` still overwrites it with Vite's final value
 			// (covering roots supplied via CLI flags).
-			config(config) {
+			async config(config, environment) {
 				if (config.root !== undefined) discoveryRoot = config.root;
+				if (environment.command === "serve") {
+					let loaded;
+					try {
+						loaded = await loadParaglideConfig({
+							projectDir: resolve(
+								discoveryRoot ?? process.cwd(),
+								args.compilerOptions.project
+							),
+						});
+					} catch {
+						// The compiler plugin owns diagnostics and recovery in dev.
+						return;
+					}
+					validateExplicitCompilerOptions(args.compilerOptions, loaded?.config);
+				}
 			},
 			configResolved(config) {
 				discoveryRoot = config.root;
@@ -50,7 +65,6 @@ function createPerLocaleCompilerOptions(
 ): ParaglidePluginOptions {
 	return {
 		...compilerOptions,
-		outputStructure: compilerOptions.outputStructure ?? "locale-modules",
 		experimentalStaticLocale: perLocaleBuildStaticLocaleExpression,
 		// Only forward additionalFiles when explicitly supplied — an empty
 		// object would override files provided by paraglide.config.*.
@@ -74,7 +88,6 @@ function validateExplicitCompilerOptions(
 		experimentalMiddlewareLocaleSplitting:
 			options.experimentalMiddlewareLocaleSplitting ??
 			config?.experimentalMiddlewareLocaleSplitting,
-		outputStructure: options.outputStructure ?? config?.outputStructure,
 	};
 	if (explicit.experimentalStaticLocale !== undefined) {
 		throw new Error(
@@ -84,14 +97,6 @@ function validateExplicitCompilerOptions(
 	if (explicit.experimentalMiddlewareLocaleSplitting) {
 		throw new Error(
 			"experimentalPerLocaleBuild cannot be combined with experimentalMiddlewareLocaleSplitting."
-		);
-	}
-	if (
-		explicit.outputStructure !== undefined &&
-		explicit.outputStructure !== "locale-modules"
-	) {
-		throw new Error(
-			'experimentalPerLocaleBuild requires outputStructure: "locale-modules".'
 		);
 	}
 }

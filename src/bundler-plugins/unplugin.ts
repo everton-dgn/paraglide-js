@@ -22,6 +22,7 @@ import {
 	resolveConfigCandidate,
 	type LoadedParaglideConfig,
 } from "../services/config/index.js";
+import type { ErrorPayload, ViteDevServer, WebSocketClient } from "vite";
 
 const PLUGIN_NAME = "unplugin-paraglide-js";
 
@@ -102,6 +103,7 @@ type PluginState = {
 	readFiles: Set<string>;
 	clearReadFiles: () => void;
 	previousCompilation: CompilationResult | undefined;
+	compilationError: Error | undefined;
 	/**
 	 * Digest of the input files and options of the last successful compilation.
 	 *
@@ -132,6 +134,7 @@ function getPluginState(args: Pick<CompilerOptions, "fs">): PluginState {
 			readFiles: tracked.readFiles,
 			clearReadFiles: tracked.clearReadFiles,
 			previousCompilation: undefined,
+			compilationError: undefined,
 			previousInputsDigest: undefined,
 			previousProject: undefined,
 			previousOutdir: undefined,
@@ -481,6 +484,7 @@ async function runCompilation(args: {
 	const { state } = args;
 	const outputStructure = resolveOutputStructure(compilerOptions);
 	maybeInvalidateForOptionsChange(state, compilerOptions);
+	state.compilationError = undefined;
 	try {
 		// Stabilize project directory listings before the first digest. The
 		// ignored cache directory must not invalidate the cache that creates it.
@@ -529,6 +533,8 @@ async function runCompilation(args: {
 		await writePersistentCache(state, compilerOptions, outputStructure);
 		logger.success(`Compilation complete (${outputStructure})`);
 	} catch (error) {
+		state.compilationError =
+			error instanceof Error ? error : new Error(String(error));
 		state.previousInputsDigest = undefined;
 		logger.error("Failed to compile project:", (error as Error).message);
 		logger.info("Please check your translation files for syntax errors.");
@@ -538,14 +544,22 @@ async function runCompilation(args: {
 
 // The return type preserves literal option types (`enforce: "pre"`, ...)
 // while `project` stays required on the input side.
+type UnpluginIntegrationOptions = Pick<CompilerOptions, "outputStructure"> & {
+	devErrorResponse?: boolean;
+};
+
 type UnpluginFactoryWithOptions = (
-	userArgs: ParaglidePluginOptions
+	userArgs: ParaglidePluginOptions,
+	meta?: Parameters<UnpluginFactory<ParaglidePluginOptions>>[1],
+	defaults?: UnpluginIntegrationOptions
 ) => ReturnType<UnpluginFactory<ParaglidePluginOptions>>;
 
-export const unpluginFactory: UnpluginFactoryWithOptions = ({
-	watchMode: explicitWatchMode,
-	...userArgs
-}) => {
+export const unpluginFactory: UnpluginFactoryWithOptions = (
+	rawArgs,
+	_meta,
+	defaults
+) => {
+	const { watchMode: explicitWatchMode, ...userArgs } = rawArgs;
 	const state = getPluginState(userArgs);
 	const { readFiles, clearReadFiles } = state;
 	// Project root as reported by the bundler (vite `root`, webpack/rspack
@@ -589,13 +603,49 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 	let hadActiveConfig = false;
 	// Watch-rebuild serialization state (see watchChange).
 	let compiling = false;
+	let isClosed = false;
+	let pendingCompilation: Promise<void> | undefined;
 	const pendingWatchPaths = new Set<string>();
+	const pendingCompilationCachePaths = new Set<string>();
 	// Options from the most recent successful resolution — reused by input
 	// events that cannot have changed them.
 	let lastOptions: CompilerOptions | undefined;
 	// Set once a bundler context rejects watch-file registrations (esbuild);
 	// further registration attempts are skipped to avoid warning floods.
 	let watchRegistrationUnsupported = false;
+	let viteServer: ViteDevServer | undefined;
+	let viteError: ErrorPayload | undefined;
+	let configLoadFailed = false;
+
+	function reportViteError(
+		error: unknown,
+		source: "config" | "compilation" = "compilation"
+	): void {
+		if (!viteServer || process.env.NODE_ENV === "production") return;
+		if (configLoadFailed && source === "compilation") return;
+		if (source === "config") configLoadFailed = true;
+		const failure = error instanceof Error ? error : new Error(String(error));
+		viteError = {
+			type: "error",
+			err: {
+				message: failure.message,
+				stack: failure.stack ?? "",
+				plugin: PLUGIN_NAME,
+			},
+		};
+		// Older Vite versions buffer errors without clients, even after recovery.
+		if (viteServer.ws.clients.size > 0) viteServer.ws.send(viteError);
+	}
+
+	function clearViteError(): void {
+		if (!viteServer || !viteError || configLoadFailed) return;
+		viteError = undefined;
+		// An invalid config can recover without writing generated files,
+		// leaving no HMR update to dismiss the error overlay.
+		if (viteServer.ws.clients.size > 0) {
+			viteServer.ws.send({ type: "full-reload" });
+		}
+	}
 
 	const getProjectDir = () =>
 		nodeNormalizePath(
@@ -604,12 +654,22 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 
 	const resolveOptionsWith = (
 		loaded: LoadedParaglideConfig | undefined
-	): CompilerOptions =>
-		resolveCompilerOptions({
+	): CompilerOptions => {
+		const options = resolveCompilerOptions({
 			config: loaded?.config,
 			overrides: userArgs,
 			root: discoveryRoot ?? process.cwd(),
 		});
+		// Apply integration defaults after each config load, keeping watched
+		// config values separate from explicit plugin overrides.
+		if (
+			options.outputStructure === undefined &&
+			defaults?.outputStructure !== undefined
+		) {
+			options.outputStructure = defaults.outputStructure;
+		}
+		return options;
+	};
 
 	/**
 	 * Loads the active config, following candidate renames and keeping the
@@ -640,8 +700,8 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 
 	/**
 	 * Rebuild for a single watch event. Config-named events reload the
-	 * config; input events reuse the last known options — options cannot
-	 * have changed without a config event.
+	 * config; input events reuse the last known options unless the config
+	 * failed to load.
 	 */
 	async function performWatchRecompile(path: string): Promise<void> {
 		const normalizedPath = nodeNormalizePath(path);
@@ -653,13 +713,17 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 
 		let args: CompilerOptions;
 		if (!configEvent && lastOptions !== undefined) {
-			args = lastOptions;
-			const targets = getWatchTargets(readFiles, { outdir: args.outdir });
+			const targets = getWatchTargets(readFiles, {
+				outdir: lastOptions.outdir,
+			});
 			if (targets.isIgnoredPath(normalizedPath)) return;
 			const shouldCompile =
 				targets.files.has(normalizedPath) ||
 				isPathWithinDirectories(normalizedPath, targets.directories);
 			if (!shouldCompile) return;
+		}
+		if (!configEvent && lastOptions !== undefined && !configLoadFailed) {
+			args = lastOptions;
 		} else {
 			if (configEvent) {
 				logger.info("Paraglide configuration changed, re-compiling.");
@@ -671,6 +735,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 			} catch (error) {
 				// Invalid config: skip the compilation entirely and surface
 				// the problem. The previously compiled output stays on disk.
+				reportViteError(error, "config");
 				logger.error((error as Error).message);
 				logger.error(
 					"Skipping compilation because of the invalid paraglide config."
@@ -678,6 +743,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 				return;
 			}
 			lastOptions = args;
+			configLoadFailed = false;
 		}
 
 		maybeInvalidateForOptionsChange(state, args);
@@ -692,6 +758,9 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 			}
 
 			clearReadFiles();
+			pendingCompilationCachePaths.add(
+				getPersistentCachePath(args, outputStructure)
+			);
 			await compileAndUpdateState({
 				state,
 				compilerOptions: args,
@@ -701,6 +770,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 			});
 			await writePersistentCache(state, args, outputStructure);
 			logger.success(`Re-compilation complete (${outputStructure})`);
+			clearViteError();
 
 			const nextTargets = getWatchTargets(readFiles, { outdir: args.outdir });
 			for (const filePath of nextTargets.files)
@@ -708,6 +778,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 			for (const directoryPath of nextTargets.directories)
 				safeAddWatchFile(undefined, directoryPath);
 		} catch (e) {
+			reportViteError(e);
 			clearReadFiles();
 			for (const filePath of previouslyReadFiles) readFiles.add(filePath);
 			state.previousCompilation = undefined;
@@ -720,6 +791,8 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 		name: PLUGIN_NAME,
 		enforce: "pre",
 		async buildStart() {
+			if (isClosed) clearParaglideConfigCache({ projectDir: getProjectDir() });
+			isClosed = false;
 			addWatchFile = this.addWatchFile?.bind(this);
 			const nativeContext = this.getNativeBuildContext?.();
 			const watchMode =
@@ -733,6 +806,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 			try {
 				const loaded = await loadActiveConfig();
 				const args = resolveOptionsWith(loaded);
+				configLoadFailed = false;
 				lastOptions = args;
 				await runCompilation({ state, compilerOptions: args, watchMode });
 			} catch (error) {
@@ -743,6 +817,7 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 					"Failed to prepare paraglide compilation:",
 					(error as Error).message
 				);
+				reportViteError(error, "config");
 				return;
 			} finally {
 				if (lastOptions !== undefined) {
@@ -765,26 +840,55 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 					);
 				}
 			}
+			if (state.compilationError) {
+				reportViteError(state.compilationError);
+			} else {
+				clearViteError();
+			}
 		},
-		async watchChange(path) {
+		watchChange(path) {
+			if (isClosed) return pendingCompilation;
 			// Serialize rebuilds: bundlers may deliver several watchChange
 			// events concurrently (webpack fires once per modified file).
 			// Every path is queued — a config event must never be starved by
 			// later input events.
 			pendingWatchPaths.add(nodeNormalizePath(path));
-			if (compiling) return;
+			if (compiling) return pendingCompilation;
 			compiling = true;
-			try {
-				while (pendingWatchPaths.size > 0) {
-					const batch = [...pendingWatchPaths];
-					pendingWatchPaths.clear();
-					for (const current of batch) {
-						await performWatchRecompile(current);
+			pendingCompilation = (async () => {
+				try {
+					while (pendingWatchPaths.size > 0) {
+						const batch = [...pendingWatchPaths];
+						pendingWatchPaths.clear();
+						for (const current of batch) {
+							await performWatchRecompile(current);
+						}
+					}
+				} finally {
+					try {
+						if (isClosed) {
+							// Inputs can change after compile reads them but before its
+							// digest is taken. Once closing starts, watcher events can
+							// no longer repair that mismatch, so neither warm nor cold
+							// restarts may reuse caches from this queue.
+							state.previousInputsDigest = undefined;
+							for (const cachePath of pendingCompilationCachePaths) {
+								await (userArgs.fs ?? nodeFs).promises.rm(cachePath, {
+									force: true,
+								});
+							}
+						}
+					} finally {
+						pendingCompilationCachePaths.clear();
+						compiling = false;
 					}
 				}
-			} finally {
-				compiling = false;
-			}
+			})();
+			return pendingCompilation;
+		},
+		closeBundle() {
+			isClosed = true;
+			return pendingCompilation;
 		},
 		vite: {
 			config: {
@@ -802,6 +906,21 @@ export const unpluginFactory: UnpluginFactoryWithOptions = ({
 					discoveryRoot = config.root;
 					isViteDevServer = config.command === "serve";
 				},
+			},
+			configureServer(server) {
+				viteServer = server;
+				if (defaults?.devErrorResponse) {
+					server.middlewares.use((_request, response, next) => {
+						if (!viteError) return next();
+						response.statusCode = 500;
+						response.setHeader("Content-Type", "text/plain; charset=utf-8");
+						response.setHeader("Cache-Control", "no-store");
+						response.end(viteError.err.message);
+					});
+				}
+				server.ws.on("connection", (socket: WebSocketClient["socket"]) => {
+					if (viteError) socket.send(JSON.stringify(viteError));
+				});
 			},
 		},
 		webpack(compiler) {

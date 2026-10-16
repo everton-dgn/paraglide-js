@@ -82,6 +82,32 @@ export default defineConfig({
 });
 ```
 
+#### Stop serving stale translations during development
+
+By default, compilation errors appear in Vite's error overlay and the last
+successful output remains available. To return HTTP 500 while translation
+compilation or the Paraglide configuration is invalid, enable `devErrorResponse`:
+
+```ts
+paraglideVitePlugin({
+	project: "./project.inlang",
+	devErrorResponse: true,
+});
+```
+
+This option belongs to the Vite plugin, not `paraglide.config`. It affects
+requests that reach Vite's development middleware. Responses contain the
+diagnostic as plain text and use `Cache-Control: no-store`. Connected clients
+still receive the error overlay. Requests resume after a successful compilation;
+a page opened directly on the plain-text error response needs a manual reload.
+Production builds keep their existing error behavior.
+
+Closing the Vite server waits for compilations already queued by the watcher.
+If compilation is still running when closing starts, its cache entries are
+discarded so the next start rebuilds from current inputs.
+Writes whose events have not reached the plugin before shutdown are picked up
+by the next build or development-server start.
+
 #### Experimental per-locale builds
 
 The Vite 8+ backend builds one independent Rolldown client environment per
