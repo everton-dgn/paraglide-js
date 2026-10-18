@@ -54,6 +54,12 @@ export type CompiledMessage = Compiled<CompilableMessage> & {
 	 * The output imports the registry only if a message calls it.
 	 */
 	registryFunctions: string[];
+	/**
+	 * The statements of the message function body, for messages without markup.
+	 * The statements read the inputs as `i` and return on every path, so a
+	 * dispatcher can run them in place of calling the message function.
+	 */
+	inline?: { statements: string[]; readsInput: boolean };
 };
 
 /**
@@ -134,7 +140,18 @@ function compileMessageWithOneVariant(
 	${stringLocals.code.join("\n\t")}return /** @type {LocalizedString} */ (${compiledPattern.code})
 };`;
 
-		return { code, node: message, registryFunctions: [...registryUsage] };
+		return {
+			code,
+			node: message,
+			registryFunctions: [...registryUsage],
+			inline: {
+				statements: [
+					...stringLocals.code,
+					`return /** @type {LocalizedString} */ (${compiledPattern.code})`,
+				],
+				readsInput: stringLocals.readsInput,
+			},
+		};
 	}
 
 	const compiledPartsPattern = compilePattern({
@@ -311,7 +328,23 @@ function compileMessageWithMultipleVariants(
 	${hasCatchAll ? "" : `return /** @type {LocalizedString} */ (${JSON.stringify(messageBundleId(message))});`}
 };`;
 
-		return { code, node: message, registryFunctions: [...registryUsage] };
+		return {
+			code,
+			node: message,
+			registryFunctions: [...registryUsage],
+			inline: {
+				statements: [
+					...stringLocals.code,
+					...compiledVariants,
+					...(hasCatchAll
+						? []
+						: [
+								`return /** @type {LocalizedString} */ (${JSON.stringify(messageBundleId(message))});`,
+							]),
+				],
+				readsInput: stringLocals.readsInput,
+			},
+		};
 	}
 
 	const localVariablesCode = joinLocalVariables(stringLocals.code);

@@ -238,6 +238,141 @@ test("inlines static text and retains only fallback helpers under strict checkJs
 	expect(m.plain_greeting({}, { locale: "de-AT" })).toBe("Hallo");
 });
 
+test("inlines messages with inputs and plurals under strict checkJs", async () => {
+	const project = await loadProjectInMemory({
+		blob: await newProject({
+			settings: {
+				baseLocale: "en",
+				locales: ["en", "de", "de-AT"],
+			},
+		}),
+	});
+
+	const text = (value: string): Pattern => [{ type: "text", value }];
+	await insertBundleNested(
+		project.db,
+		createBundleNested({
+			id: "welcome",
+			declarations: [{ type: "input-variable", name: "name" }],
+			messages: ["Hello", "Hallo"].map((greeting, index) => ({
+				locale: index === 0 ? "en" : "de",
+				variants: [
+					{
+						pattern: [
+							{ type: "text", value: `${greeting} ` },
+							{
+								type: "expression",
+								arg: { type: "variable-reference", name: "name" },
+							},
+						],
+					},
+				],
+			})),
+		})
+	);
+	await insertBundleNested(
+		project.db,
+		createBundleNested({
+			id: "cats",
+			declarations: [
+				{ type: "input-variable", name: "count" },
+				{
+					type: "local-variable",
+					name: "countPlural",
+					value: {
+						type: "expression",
+						arg: { type: "variable-reference", name: "count" },
+						annotation: {
+							type: "function-reference",
+							name: "plural",
+							options: [],
+						},
+					},
+				},
+			],
+			messages: [
+				["en", "One cat", " cats"],
+				["de", "Eine Katze", " Katzen"],
+			].map(([locale, one, other]) => ({
+				locale: locale!,
+				selectors: [{ type: "variable-reference", name: "countPlural" }],
+				variants: [
+					{
+						matches: [
+							{ type: "literal-match", key: "countPlural", value: "one" },
+						],
+						pattern: text(one!),
+					},
+					{
+						matches: [{ type: "catchall-match", key: "countPlural" }],
+						pattern: [
+							{
+								type: "expression",
+								arg: { type: "variable-reference", name: "count" },
+							},
+							{ type: "text", value: other! },
+						],
+					},
+				],
+			})),
+		})
+	);
+
+	const output = await compileProject({
+		project,
+		compilerOptions: { outputStructure: "message-modules" },
+	});
+
+	// Only the message that de-AT's missing-locale alias calls keeps its function.
+	expect(output["messages/welcome.js"]).not.toContain("const en_welcome =");
+	expect(output["messages/welcome.js"]).toContain("const de_welcome =");
+	expect(output["messages/cats.js"]).not.toContain("const en_cats =");
+	expect(output["messages/cats.js"]).toContain("const de_cats =");
+	expect(output["messages/cats.js"]).toContain("registry.plural");
+
+	const tsProject = await typescriptProject({
+		useInMemoryFileSystem: true,
+		compilerOptions: {
+			outDir: "dist",
+			declaration: true,
+			allowJs: true,
+			checkJs: true,
+			noImplicitAny: true,
+			noUnusedLocals: true,
+			noUnusedParameters: true,
+			noImplicitReturns: true,
+			noImplicitThis: true,
+			noUncheckedIndexedAccess: true,
+			noPropertyAccessFromIndexSignature: true,
+			module: ts.ModuleKind.Node16,
+			strict: true,
+		},
+	});
+	for (const [fileName, code] of Object.entries(output)) {
+		if (fileName.endsWith(".js") || fileName.endsWith(".ts")) {
+			tsProject.createSourceFile(fileName, code);
+		}
+	}
+	const diagnostics = ts
+		.getPreEmitDiagnostics(tsProject.createProgram())
+		.filter(
+			(d) =>
+				!d.messageText.toString().includes("Cannot find module 'async_hooks'")
+		);
+	expect(diagnostics).toEqual([]);
+
+	const { m } = await importCode(
+		await bundleCode(output, `export * as m from "./paraglide/messages.js"`)
+	);
+	expect(m.welcome({ name: "Ada" }, { locale: "en" })).toBe("Hello Ada");
+	expect(m.welcome({ name: "Ada" }, { locale: "de" })).toBe("Hallo Ada");
+	expect(m.welcome({ name: "Ada" }, { locale: "de-AT" })).toBe("Hallo Ada");
+	expect(m.cats({ count: 1 }, { locale: "en" })).toBe("One cat");
+	expect(m.cats({ count: 3 }, { locale: "en" })).toBe("3 cats");
+	expect(m.cats({ count: 3 }, { locale: "de" })).toBe("3 Katzen");
+	expect(m.cats({ count: 1 }, { locale: "de-AT" })).toBe("Eine Katze");
+});
+
 test("emitPrettierIgnore", async () => {
 	const project = await loadProjectInMemory({
 		blob: await newProject({

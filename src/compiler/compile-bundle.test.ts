@@ -208,7 +208,7 @@ ${result.bundle.code}
 	expect(message({}, { locale: "fr" })).toBe(compiledText);
 });
 
-test("leaves markup and multi-variant messages on their message functions", () => {
+test("leaves markup messages on their message functions", () => {
 	const markupBundle: BundleNested = {
 		id: "notice",
 		declarations: [],
@@ -254,7 +254,78 @@ test("leaves markup and multi-variant messages on their message functions", () =
 	expect(markupResult.bundle.code).not.toContain(
 		'return /** @type {LocalizedString} */ ("Hello")'
 	);
+});
 
+function createInputBundle(): BundleNested {
+	const text = (locale: string, value: string) => ({
+		id: `welcome-${locale}`,
+		bundle_id: "welcome",
+		locale,
+		selectors: [],
+		variants: [
+			{
+				id: `welcome-${locale}-variant`,
+				message_id: `welcome-${locale}`,
+				matches: [],
+				pattern: [
+					{ type: "text" as const, value },
+					{
+						type: "expression" as const,
+						arg: { type: "variable-reference" as const, name: "name" },
+					},
+				],
+			},
+		],
+	});
+	return {
+		id: "welcome",
+		declarations: [{ type: "input-variable", name: "name" }],
+		messages: [text("en", "Hello "), text("de", "Hallo ")],
+	};
+}
+
+test("inlines message bodies with inputs and keeps fallback targets as functions", async () => {
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle: createInputBundle(),
+		// fr has no message and aliases de, so de stays a function fr can call.
+		fallbackMap: { en: undefined, de: "en", fr: "de" },
+		messageReferenceExpression: (locale) => `${locale}_welcome`,
+		settings: {
+			baseLocale: "en",
+			locales: ["en", "de", "fr"],
+		} as ProjectSettings,
+	});
+
+	expect(result.unreferencedMessageLocales).toEqual(["en"]);
+	expect(result.bundle.code).toContain("((i, options = {}) => {");
+	expect(result.bundle.code).toContain(
+		'if (locale === "fr") return fr_welcome(i)'
+	);
+	expect(result.bundle.code).toContain(
+		"return /** @type {LocalizedString} */ (`Hello ${i?.name}`)"
+	);
+	expect(result.bundle.code).not.toContain("en_welcome");
+	expect(result.bundle.code).not.toContain("inputs)");
+
+	const de = result.messages.de;
+	if (!de) throw new Error("Expected a compiled de message");
+	const module = await import(
+		"data:text/javascript;charset=utf-8," +
+			encodeURIComponent(`
+const getLocale = () => "en";
+const experimentalStaticLocale = undefined;
+const de_welcome = ${de.code.replace(/;\s*$/, "")};
+const fr_welcome = de_welcome;
+${result.bundle.code}
+`)
+	);
+	expect(module.welcome({ name: "Ada" }, { locale: "en" })).toBe("Hello Ada");
+	expect(module.welcome({ name: "Ada" }, { locale: "de" })).toBe("Hallo Ada");
+	expect(module.welcome({ name: "Ada" }, { locale: "fr" })).toBe("Hallo Ada");
+});
+
+test("inlines multi-variant bodies in their own block scope", async () => {
 	const multiVariantBundle: BundleNested = {
 		id: "item_count",
 		declarations: [{ type: "input-variable", name: "count" }],
@@ -286,12 +357,54 @@ test("leaves markup and multi-variant messages on their message functions", () =
 		messageReferenceExpression: (locale) => `${locale}_item_count`,
 		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
 	});
-	expect(multiVariantResult.bundle.code).toContain(
-		'if (locale === "de") return de_item_count(inputs)'
+	expect(multiVariantResult.unreferencedMessageLocales).toEqual(["en", "de"]);
+	expect(multiVariantResult.bundle.code).not.toContain("de_item_count");
+	expect(multiVariantResult.bundle.code).not.toContain("en_item_count");
+
+	const module = await import(
+		"data:text/javascript;charset=utf-8," +
+			encodeURIComponent(`
+const getLocale = () => "en";
+const experimentalStaticLocale = undefined;
+${multiVariantResult.bundle.code}
+`)
 	);
-	expect(multiVariantResult.bundle.code).toContain(
-		"return en_item_count(inputs)"
+	expect(module.item_count({ count: 0 }, { locale: "en" })).toBe("No items");
+	expect(module.item_count({ count: 3 }, { locale: "en" })).toBe("Some items");
+	expect(module.item_count({ count: "0" }, { locale: "de" })).toBe("No items");
+	expect(module.item_count({ count: 3 }, { locale: "de" })).toBe("Some items");
+});
+
+test("keeps message functions with inputs in a per-locale build", () => {
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle: createInputBundle(),
+		fallbackMap: { en: undefined, de: "en" },
+		messageReferenceExpression: (locale) => `${locale}_welcome`,
+		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
+		experimentalStaticLocale: perLocaleBuildStaticLocaleExpression,
+	});
+
+	expect(result.unreferencedMessageLocales).toEqual([]);
+	expect(result.bundle.code).toContain(
+		'if (locale === "de") return de_welcome(inputs)'
 	);
+	expect(result.bundle.code).toContain("return en_welcome(inputs)");
+});
+
+test("passes the dispatcher input to the server message when middleware locale splitting is on", () => {
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle: createInputBundle(),
+		fallbackMap: { en: undefined, de: "en" },
+		messageReferenceExpression: (locale) => `${locale}_welcome`,
+		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
+		experimentalMiddlewareLocaleSplitting: true,
+	});
+
+	expect(result.bundle.code).toContain("((i, options = {}) => {");
+	expect(result.bundle.code).toContain("__paraglide.ssr.welcome(i)");
+	expect(result.bundle.code).not.toContain("void i;");
 });
 
 test("keeps static text message references in a per-locale build", () => {
