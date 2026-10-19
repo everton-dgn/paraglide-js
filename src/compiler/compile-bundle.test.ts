@@ -256,32 +256,75 @@ test("leaves markup messages on their message functions", () => {
 	);
 });
 
-function createInputBundle(): BundleNested {
-	const text = (locale: string, value: string) => ({
-		id: `welcome-${locale}`,
-		bundle_id: "welcome",
-		locale,
-		selectors: [],
-		variants: [
-			{
-				id: `welcome-${locale}-variant`,
-				message_id: `welcome-${locale}`,
-				matches: [],
-				pattern: [
-					{ type: "text" as const, value },
-					{
-						type: "expression" as const,
-						arg: { type: "variable-reference" as const, name: "name" },
-					},
-				],
-			},
-		],
-	});
+type Pattern = BundleNested["messages"][number]["variants"][number]["pattern"];
+
+function createBundle(
+	id: string,
+	declarations: BundleNested["declarations"],
+	variantsByLocale: Record<
+		string,
+		Array<{
+			matches?: BundleNested["messages"][number]["variants"][number]["matches"];
+			pattern: Pattern;
+		}>
+	>,
+	selectors: BundleNested["messages"][number]["selectors"] = []
+): BundleNested {
 	return {
-		id: "welcome",
-		declarations: [{ type: "input-variable", name: "name" }],
-		messages: [text("en", "Hello "), text("de", "Hallo ")],
+		id,
+		declarations,
+		messages: Object.entries(variantsByLocale).map(([locale, variants]) => ({
+			id: `${id}-${locale}`,
+			bundle_id: id,
+			locale,
+			selectors,
+			variants: variants.map((variant, index) => ({
+				id: `${id}-${locale}-${index}`,
+				message_id: `${id}-${locale}`,
+				matches: variant.matches ?? [],
+				pattern: variant.pattern,
+			})),
+		})),
 	};
+}
+
+const variable = (name: string) => ({
+	type: "expression" as const,
+	arg: { type: "variable-reference" as const, name },
+});
+
+function createInputBundle(): BundleNested {
+	return createBundle("welcome", [{ type: "input-variable", name: "name" }], {
+		en: [{ pattern: [{ type: "text", value: "Hello " }, variable("name")] }],
+		de: [{ pattern: [{ type: "text", value: "Hallo " }, variable("name")] }],
+	});
+}
+
+/**
+ * Imports a compiled bundle the way message-modules output assembles it: the
+ * dispatcher plus the message functions of the locales it still references.
+ */
+async function importBundle(
+	result: ReturnType<typeof compileBundle>,
+	bundleId: string,
+	prelude = ""
+) {
+	const messageFunctions = Object.entries(result.messages)
+		.filter(([locale]) => !result.unreferencedMessageLocales?.includes(locale))
+		.map(
+			([locale, message]) =>
+				`const ${locale}_${bundleId} = ${message.code.replace(/;\s*$/, "")};`
+		);
+	return import(
+		"data:text/javascript;charset=utf-8," +
+			encodeURIComponent(`
+const getLocale = () => "en";
+const experimentalStaticLocale = undefined;
+${prelude}
+${messageFunctions.join("\n")}
+${result.bundle.code}
+`)
+	);
 }
 
 test("inlines message bodies with inputs and keeps fallback targets as functions", async () => {
@@ -298,27 +341,13 @@ test("inlines message bodies with inputs and keeps fallback targets as functions
 	});
 
 	expect(result.unreferencedMessageLocales).toEqual(["en"]);
-	expect(result.bundle.code).toContain("((i, options = {}) => {");
-	expect(result.bundle.code).toContain(
-		'if (locale === "fr") return fr_welcome(i)'
-	);
-	expect(result.bundle.code).toContain(
-		"return /** @type {LocalizedString} */ (`Hello ${i?.name}`)"
-	);
 	expect(result.bundle.code).not.toContain("en_welcome");
-	expect(result.bundle.code).not.toContain("inputs)");
+	expect(result.bundle.code).toContain("fr_welcome(");
 
-	const de = result.messages.de;
-	if (!de) throw new Error("Expected a compiled de message");
-	const module = await import(
-		"data:text/javascript;charset=utf-8," +
-			encodeURIComponent(`
-const getLocale = () => "en";
-const experimentalStaticLocale = undefined;
-const de_welcome = ${de.code.replace(/;\s*$/, "")};
-const fr_welcome = de_welcome;
-${result.bundle.code}
-`)
+	const module = await importBundle(
+		result,
+		"welcome",
+		"const fr_welcome = (i) => de_welcome(i);"
 	);
 	expect(module.welcome({ name: "Ada" }, { locale: "en" })).toBe("Hello Ada");
 	expect(module.welcome({ name: "Ada" }, { locale: "de" })).toBe("Hallo Ada");
@@ -326,53 +355,125 @@ ${result.bundle.code}
 });
 
 test("inlines multi-variant bodies in their own block scope", async () => {
-	const multiVariantBundle: BundleNested = {
-		id: "item_count",
-		declarations: [{ type: "input-variable", name: "count" }],
-		messages: ["en", "de"].map((locale) => ({
-			id: `item_count-${locale}`,
-			bundle_id: "item_count",
-			locale,
-			selectors: [{ type: "variable-reference", name: "count" }],
-			variants: [
-				{
-					id: `item_count-${locale}-zero`,
-					message_id: `item_count-${locale}`,
-					matches: [{ type: "literal-match", key: "count", value: "0" }],
-					pattern: [{ type: "text", value: "No items" }],
-				},
-				{
-					id: `item_count-${locale}-other`,
-					message_id: `item_count-${locale}`,
-					matches: [{ type: "catchall-match", key: "count" }],
-					pattern: [{ type: "text", value: "Some items" }],
-				},
-			],
-		})),
-	};
-	const multiVariantResult = compileBundle({
+	const variants = (none: string, some: string) => [
+		{
+			matches: [{ type: "literal-match" as const, key: "count", value: "0" }],
+			pattern: [{ type: "text" as const, value: none }],
+		},
+		{
+			matches: [{ type: "catchall-match" as const, key: "count" }],
+			pattern: [{ type: "text" as const, value: some }],
+		},
+	];
+	const result = compileBundle({
 		inlineMessages: true,
-		bundle: multiVariantBundle,
+		bundle: createBundle(
+			"item_count",
+			[{ type: "input-variable", name: "count" }],
+			{
+				en: variants("No items", "Some items"),
+				de: variants("Keine Artikel", "Einige Artikel"),
+			},
+			[{ type: "variable-reference", name: "count" }]
+		),
 		fallbackMap: { en: undefined, de: "en" },
 		messageReferenceExpression: (locale) => `${locale}_item_count`,
 		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
 	});
-	expect(multiVariantResult.unreferencedMessageLocales).toEqual(["en", "de"]);
-	expect(multiVariantResult.bundle.code).not.toContain("de_item_count");
-	expect(multiVariantResult.bundle.code).not.toContain("en_item_count");
+	expect(result.unreferencedMessageLocales).toEqual(["en", "de"]);
+	expect(result.bundle.code).not.toContain("_item_count");
 
-	const module = await import(
-		"data:text/javascript;charset=utf-8," +
-			encodeURIComponent(`
-const getLocale = () => "en";
-const experimentalStaticLocale = undefined;
-${multiVariantResult.bundle.code}
-`)
-	);
+	const module = await importBundle(result, "item_count");
 	expect(module.item_count({ count: 0 }, { locale: "en" })).toBe("No items");
 	expect(module.item_count({ count: 3 }, { locale: "en" })).toBe("Some items");
-	expect(module.item_count({ count: "0" }, { locale: "de" })).toBe("No items");
-	expect(module.item_count({ count: 3 }, { locale: "de" })).toBe("Some items");
+	expect(module.item_count({ count: "0" }, { locale: "de" })).toBe(
+		"Keine Artikel"
+	);
+	expect(module.item_count({ count: 3 }, { locale: "de" })).toBe(
+		"Einige Artikel"
+	);
+});
+
+test("inlines locals that repeat across locales and shadow the dispatcher's locale and options", async () => {
+	// Each locale declares `locale` and `options` again, next to the
+	// dispatcher's own `locale` constant and `options` parameter.
+	const pattern = (label: string): Pattern => [
+		{ type: "text", value: label },
+		variable("locale"),
+		{ type: "text", value: " " },
+		variable("options"),
+	];
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle: createBundle(
+			"weight",
+			[
+				{ type: "input-variable", name: "amount" },
+				{
+					type: "local-variable",
+					name: "locale",
+					value: variable("amount"),
+				},
+				{
+					type: "local-variable",
+					name: "options",
+					value: {
+						type: "expression",
+						arg: { type: "literal", value: "kg" },
+					},
+				},
+			],
+			{
+				en: [{ pattern: pattern("Weight: ") }],
+				de: [{ pattern: pattern("Gewicht: ") }],
+			}
+		),
+		fallbackMap: { en: undefined, de: "en" },
+		messageReferenceExpression: (locale) => `${locale}_weight`,
+		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
+	});
+	expect(result.unreferencedMessageLocales).toEqual(["en", "de"]);
+	expect(result.bundle.code).not.toContain("_weight");
+
+	const module = await importBundle(result, "weight");
+	expect(module.weight({ amount: 5 }, { locale: "en" })).toBe("Weight: 5 kg");
+	expect(module.weight({ amount: 5 }, { locale: "de" })).toBe("Gewicht: 5 kg");
+	expect(module.weight({ amount: 5 })).toBe("Weight: 5 kg");
+});
+
+test("returns the bundle id from an inlined body when no variant matches", async () => {
+	const variants = (zero: string, one: string) => [
+		{
+			matches: [{ type: "literal-match" as const, key: "count", value: "0" }],
+			pattern: [{ type: "text" as const, value: zero }],
+		},
+		{
+			matches: [{ type: "literal-match" as const, key: "count", value: "1" }],
+			pattern: [{ type: "text" as const, value: one }],
+		},
+	];
+	const result = compileBundle({
+		inlineMessages: true,
+		bundle: createBundle(
+			"bottles",
+			[{ type: "input-variable", name: "count" }],
+			{
+				en: variants("No bottles", "One bottle"),
+				de: variants("Keine Flaschen", "Eine Flasche"),
+			},
+			[{ type: "variable-reference", name: "count" }]
+		),
+		fallbackMap: { en: undefined, de: "en" },
+		messageReferenceExpression: (locale) => `${locale}_bottles`,
+		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
+	});
+	expect(result.unreferencedMessageLocales).toEqual(["en", "de"]);
+	expect(result.bundle.code).not.toContain("_bottles");
+
+	const module = await importBundle(result, "bottles");
+	expect(module.bottles({ count: 1 }, { locale: "de" })).toBe("Eine Flasche");
+	expect(module.bottles({ count: 7 }, { locale: "en" })).toBe("bottles");
+	expect(module.bottles({ count: 7 }, { locale: "de" })).toBe("bottles");
 });
 
 test("keeps message functions with inputs in a per-locale build", () => {
@@ -392,7 +493,7 @@ test("keeps message functions with inputs in a per-locale build", () => {
 	expect(result.bundle.code).toContain("return en_welcome(inputs)");
 });
 
-test("passes the dispatcher input to the server message when middleware locale splitting is on", () => {
+test("runs inlined bodies on the server and forwards the inputs on the client when middleware locale splitting is on", async () => {
 	const result = compileBundle({
 		inlineMessages: true,
 		bundle: createInputBundle(),
@@ -401,10 +502,41 @@ test("passes the dispatcher input to the server message when middleware locale s
 		settings: { baseLocale: "en", locales: ["en", "de"] } as ProjectSettings,
 		experimentalMiddlewareLocaleSplitting: true,
 	});
+	expect(result.unreferencedMessageLocales).toEqual(["en", "de"]);
+	expect(result.bundle.code).not.toContain("_welcome");
 
-	expect(result.bundle.code).toContain("((i, options = {}) => {");
-	expect(result.bundle.code).toContain("__paraglide.ssr.welcome(i)");
-	expect(result.bundle.code).not.toContain("void i;");
+	const module = await importBundle(
+		result,
+		"welcome",
+		`const experimentalMiddlewareLocaleSplitting = true;
+let isServer = true;
+export const setIsServer = (value) => { isServer = value; };
+export const tracked = [];
+const trackMessageCall = (id, locale) => tracked.push([id, locale]);`
+	);
+	const inputs = { name: "Ada" };
+
+	expect(module.welcome(inputs, { locale: "de" })).toBe("Hallo Ada");
+	expect(module.tracked).toEqual([["welcome", "de"]]);
+
+	const serverCalls: unknown[] = [];
+	const scope = globalThis as { __paraglide?: unknown };
+	scope.__paraglide = {
+		ssr: {
+			welcome: (received: unknown) => {
+				serverCalls.push(received);
+				return "from the server";
+			},
+		},
+	};
+	try {
+		module.setIsServer(false);
+		expect(module.welcome(inputs, { locale: "de" })).toBe("from the server");
+		expect(serverCalls).toEqual([inputs]);
+		expect(serverCalls[0]).toBe(inputs);
+	} finally {
+		delete scope.__paraglide;
+	}
 });
 
 test("keeps static text message references in a per-locale build", () => {

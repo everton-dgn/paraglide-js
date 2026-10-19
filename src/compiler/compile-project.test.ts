@@ -290,9 +290,11 @@ test("inlines messages with inputs and plurals under strict checkJs", async () =
 					},
 				},
 			],
+			// de-AT has its own plural, so every locale declares `countPlural`.
 			messages: [
 				["en", "One cat", " cats"],
 				["de", "Eine Katze", " Katzen"],
+				["de-AT", "Ein Katzerl", " Katzerl"],
 			].map(([locale, one, other]) => ({
 				locale: locale!,
 				selectors: [{ type: "variable-reference", name: "countPlural" }],
@@ -318,6 +320,43 @@ test("inlines messages with inputs and plurals under strict checkJs", async () =
 		})
 	);
 
+	// The only declared input is never read, so the dispatcher marks it used.
+	await insertBundleNested(
+		project.db,
+		createBundleNested({
+			id: "unit_label",
+			declarations: [
+				{ type: "input-variable", name: "unused" },
+				{
+					type: "local-variable",
+					name: "unit",
+					value: {
+						type: "expression",
+						arg: { type: "literal", value: "kg" },
+					},
+				},
+			],
+			messages: [
+				["en", "Weight in "],
+				["de", "Gewicht in "],
+				["de-AT", "Gewicht in "],
+			].map(([locale, label]) => ({
+				locale: locale!,
+				variants: [
+					{
+						pattern: [
+							{ type: "text", value: label! },
+							{
+								type: "expression",
+								arg: { type: "variable-reference", name: "unit" },
+							},
+						],
+					},
+				],
+			})),
+		})
+	);
+
 	const output = await compileProject({
 		project,
 		compilerOptions: { outputStructure: "message-modules" },
@@ -326,9 +365,10 @@ test("inlines messages with inputs and plurals under strict checkJs", async () =
 	// Only the message that de-AT's missing-locale alias calls keeps its function.
 	expect(output["messages/welcome.js"]).not.toContain("const en_welcome =");
 	expect(output["messages/welcome.js"]).toContain("const de_welcome =");
-	expect(output["messages/cats.js"]).not.toContain("const en_cats =");
-	expect(output["messages/cats.js"]).toContain("const de_cats =");
-	expect(output["messages/cats.js"]).toContain("registry.plural");
+	expect(output["messages/cats.js"]).not.toMatch(/const \w+_cats =/);
+	expect(output["messages/unit_label.js"]).not.toMatch(
+		/const \w+_unit_label =/
+	);
 
 	const tsProject = await typescriptProject({
 		useInMemoryFileSystem: true,
@@ -355,10 +395,11 @@ test("inlines messages with inputs and plurals under strict checkJs", async () =
 	}
 	const diagnostics = ts
 		.getPreEmitDiagnostics(tsProject.createProgram())
-		.filter(
+		.map(
 			(d) =>
-				!d.messageText.toString().includes("Cannot find module 'async_hooks'")
-		);
+				`${d.file?.fileName}: ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`
+		)
+		.filter((text) => !text.includes("Cannot find module 'async_hooks'"));
 	expect(diagnostics).toEqual([]);
 
 	const { m } = await importCode(
@@ -370,7 +411,13 @@ test("inlines messages with inputs and plurals under strict checkJs", async () =
 	expect(m.cats({ count: 1 }, { locale: "en" })).toBe("One cat");
 	expect(m.cats({ count: 3 }, { locale: "en" })).toBe("3 cats");
 	expect(m.cats({ count: 3 }, { locale: "de" })).toBe("3 Katzen");
-	expect(m.cats({ count: 1 }, { locale: "de-AT" })).toBe("Eine Katze");
+	expect(m.cats({ count: 1 }, { locale: "de" })).toBe("Eine Katze");
+	expect(m.cats({ count: 1 }, { locale: "de-AT" })).toBe("Ein Katzerl");
+	expect(m.cats({ count: 3 }, { locale: "de-AT" })).toBe("3 Katzerl");
+	expect(m.unit_label({ unused: 1 }, { locale: "en" })).toBe("Weight in kg");
+	expect(m.unit_label({ unused: 1 }, { locale: "de-AT" })).toBe(
+		"Gewicht in kg"
+	);
 });
 
 test("emitPrettierIgnore", async () => {

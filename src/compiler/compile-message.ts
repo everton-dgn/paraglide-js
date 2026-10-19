@@ -136,22 +136,13 @@ function compileMessageWithOneVariant(
 	});
 
 	if (!hasMarkup) {
-		const code = `/** @type {(inputs: ${messageInputType}) => LocalizedString} */ (${stringLocals.readsInput ? "i" : ""}) => {
-	${stringLocals.code.join("\n\t")}return /** @type {LocalizedString} */ (${compiledPattern.code})
-};`;
-
-		return {
-			code,
-			node: message,
-			registryFunctions: [...registryUsage],
-			inline: {
-				statements: [
-					...stringLocals.code,
-					`return /** @type {LocalizedString} */ (${compiledPattern.code})`,
-				],
-				readsInput: stringLocals.readsInput,
-			},
-		};
+		return compiledStringMessage(message, messageInputType, registryUsage, {
+			statements: [
+				...stringLocals.code,
+				`return /** @type {LocalizedString} */ (${compiledPattern.code})`,
+			],
+			readsInput: stringLocals.readsInput,
+		});
 	}
 
 	const compiledPartsPattern = compilePattern({
@@ -322,29 +313,17 @@ function compileMessageWithMultipleVariants(
 		}
 	}
 
-	if (!hasMarkup) {
-		const code = `/** @type {(inputs: ${messageInputType}) => LocalizedString} */ (${stringLocals.readsInput ? "i" : ""}) => {${stringLocals.code.join("\n\t")}
-	${compiledVariants.join("\n\t")}
-	${hasCatchAll ? "" : `return /** @type {LocalizedString} */ (${JSON.stringify(messageBundleId(message))});`}
-};`;
+	const fallbackString = `return /** @type {LocalizedString} */ (${JSON.stringify(messageBundleId(message))});`;
 
-		return {
-			code,
-			node: message,
-			registryFunctions: [...registryUsage],
-			inline: {
-				statements: [
-					...stringLocals.code,
-					...compiledVariants,
-					...(hasCatchAll
-						? []
-						: [
-								`return /** @type {LocalizedString} */ (${JSON.stringify(messageBundleId(message))});`,
-							]),
-				],
-				readsInput: stringLocals.readsInput,
-			},
-		};
+	if (!hasMarkup) {
+		return compiledStringMessage(message, messageInputType, registryUsage, {
+			statements: [
+				...stringLocals.code,
+				...compiledVariants,
+				...(hasCatchAll ? [] : [fallbackString]),
+			],
+			readsInput: stringLocals.readsInput,
+		});
 	}
 
 	const localVariablesCode = joinLocalVariables(stringLocals.code);
@@ -364,11 +343,7 @@ function compileMessageWithMultipleVariants(
 	const code = `/** @type {((inputs: ${inputType}) => LocalizedString) & { parts: (inputs: ${inputType}) => import('../runtime.js').MessagePart[] }} */ (
 	/* @__PURE__ */ Object.assign(
 		/** @type {(inputs: ${inputType}) => LocalizedString} */ ((${messageInput}) => {
-			${localVariablesCode}${stringVariantsCode}${
-				hasCatchAll
-					? ""
-					: `return /** @type {LocalizedString} */ (${JSON.stringify(messageBundleId(message))});`
-			}
+			${localVariablesCode}${stringVariantsCode}${hasCatchAll ? "" : fallbackString}
 		}),
 		{
 			parts: /** @type {(inputs: ${inputType}) => import('../runtime.js').MessagePart[]} */ ((${partsMessageInput}) => {
@@ -383,6 +358,24 @@ function compileMessageWithMultipleVariants(
 );`;
 
 	return { code, node: message, registryFunctions: [...registryUsage] };
+}
+
+/**
+ * A message without markup: the function and its body statements, which a
+ * dispatcher can run in place of calling the function.
+ */
+function compiledStringMessage(
+	message: CompilableMessage,
+	inputType: string,
+	registryUsage: RegistryUsage,
+	inline: NonNullable<CompiledMessage["inline"]>
+): CompiledMessage {
+	return {
+		code: `/** @type {(inputs: ${inputType}) => LocalizedString} */ (${inline.readsInput ? "i" : ""}) => {\n\t${inline.statements.join("\n\t")}\n};`,
+		node: message,
+		registryFunctions: [...registryUsage],
+		inline,
+	};
 }
 
 /**
