@@ -19,6 +19,8 @@ import type { CompilerOptions } from "./compiler-options.js";
 import { perLocaleBuildStaticLocaleExpression } from "./per-locale-build.js";
 import { resolveInputAlias } from "./input-alias.js";
 
+type InlineBody = NonNullable<CompiledMessage["inline"]>;
+
 export type CompiledBundleWithMessages = {
 	/** The compilation result for the bundle index */
 	bundle: Compiled<Bundle>;
@@ -69,17 +71,34 @@ export const compileBundle = (args: {
 		// set the pattern for the language tag
 		compiledMessages[message.locale] = compiledMessage;
 	}
-	const inlinePlainTextByLocale =
-		args.inlineMessages !== true ||
-		args.experimentalStaticLocale === perLocaleBuildStaticLocaleExpression
-			? undefined
-			: findPlainTextMessages(args.bundle);
+	const inlineMessages =
+		args.inlineMessages === true &&
+		args.experimentalStaticLocale !== perLocaleBuildStaticLocaleExpression;
+	const inlinePlainTextByLocale = inlineMessages
+		? findPlainTextMessages(args.bundle)
+		: undefined;
+	const inlineCandidates = inlineMessages
+		? findInlineBodies(compiledMessages, inlinePlainTextByLocale ?? {})
+		: {};
 	const unreferencedMessageLocales = findUnreferencedMessageLocales({
-		inlinePlainTextByLocale: inlinePlainTextByLocale ?? Object.create(null),
+		inlinedLocales: [
+			...Object.keys(inlinePlainTextByLocale ?? {}),
+			...Object.keys(inlineCandidates),
+		],
 		compiledMessages,
 		fallbackMap: args.fallbackMap,
 		hasMarkup,
 	});
+	// A fallback target stays a message function that the missing-locale alias
+	// calls, so its dispatcher branch calls it too instead of repeating the body.
+	const inlineBodiesByLocale = Object.create(null) as Record<
+		string,
+		InlineBody
+	>;
+	for (const locale of unreferencedMessageLocales) {
+		const body = inlineCandidates[locale];
+		if (body) inlineBodiesByLocale[locale] = body;
+	}
 
 	return {
 		bundle: compileBundleFunction({
@@ -87,6 +106,7 @@ export const compileBundle = (args: {
 			availableLocales: Object.keys(args.fallbackMap),
 			messageReferenceExpression: args.messageReferenceExpression,
 			inlinePlainTextByLocale,
+			inlineBodiesByLocale,
 			settings: args.settings,
 			matchTypes,
 			hasMarkup,
@@ -128,8 +148,28 @@ function findPlainTextMessages(bundle: BundleNested): Record<string, string> {
 	return result;
 }
 
+/**
+ * Finds the messages with inputs whose function body the dispatcher can run
+ * in place of calling the message function. Markup messages keep their `.parts`
+ * function, and messages that are plain text are returned as a string instead.
+ */
+function findInlineBodies(
+	compiledMessages: Record<string, CompiledMessage>,
+	inlinePlainTextByLocale: Record<string, string>
+): Record<string, InlineBody> {
+	const result = Object.create(null) as Record<string, InlineBody>;
+
+	for (const [locale, message] of Object.entries(compiledMessages)) {
+		if (message.inline && inlinePlainTextByLocale[locale] === undefined) {
+			result[locale] = message.inline;
+		}
+	}
+
+	return result;
+}
+
 function findUnreferencedMessageLocales(args: {
-	inlinePlainTextByLocale: Record<string, string>;
+	inlinedLocales: string[];
 	compiledMessages: Record<string, CompiledMessage>;
 	fallbackMap: Record<string, string | undefined>;
 	hasMarkup: boolean;
@@ -154,9 +194,7 @@ function findUnreferencedMessageLocales(args: {
 		}
 	}
 
-	return Object.keys(args.inlinePlainTextByLocale).filter(
-		(locale) => !fallbackTargets.has(locale)
-	);
+	return args.inlinedLocales.filter((locale) => !fallbackTargets.has(locale));
 }
 
 const compileBundleFunction = (args: {
@@ -174,6 +212,8 @@ const compileBundleFunction = (args: {
 	messageReferenceExpression: (locale: string, bundleId: string) => string;
 	/** Static text messages that can be returned directly from the dispatcher. */
 	inlinePlainTextByLocale?: Record<string, string>;
+	/** Message function bodies that the dispatcher runs in place of a call. */
+	inlineBodiesByLocale?: Record<string, InlineBody>;
 	/**
 	 * The project settings
 	 */
@@ -218,9 +258,14 @@ const compileBundleFunction = (args: {
 					baseLocale,
 				]
 			: args.availableLocales;
-	const allStringBranchesInline = dispatchLocales.every(
-		(locale) => args.inlinePlainTextByLocale?.[locale] !== undefined
-	);
+	// Inlined bodies read their inputs as `i`.
+	const inputsName = Object.keys(args.inlineBodiesByLocale ?? {}).length
+		? "i"
+		: "inputs";
+	const anyBranchReadsInputs = dispatchLocales.some((locale) => {
+		if (args.inlinePlainTextByLocale?.[locale] !== undefined) return false;
+		return args.inlineBodiesByLocale?.[locale]?.readsInput ?? true;
+	});
 
 	const inputType = args.inputTypeAliasName;
 	const localesUnion =
@@ -255,7 +300,15 @@ const compileBundleFunction = (args: {
 					if (inlineText !== undefined) {
 						return `${prefix}${condition}return /** @type {LocalizedString} */ (${JSON.stringify(inlineText)})`;
 					}
-					return `${prefix}${condition}return ${messageRef}(inputs)`;
+					const inlineBody = args.inlineBodiesByLocale?.[locale];
+					if (inlineBody) {
+						const [onlyStatement] = inlineBody.statements;
+						return inlineBody.statements.length === 1 &&
+							onlyStatement?.startsWith("return ")
+							? `${prefix}${condition}${onlyStatement}`
+							: `${prefix}${condition}{\n${continuationIndent}\t${inlineBody.statements.join(`\n${continuationIndent}\t`)}\n${continuationIndent}}`;
+					}
+					return `${prefix}${condition}return ${messageRef}(${inputsName})`;
 				}
 
 				// A locale's message has .parts() only if its own variants have
@@ -288,7 +341,7 @@ ${englishMatchTableDoc}${jsDocBundleFunctionTypes({
 			return "";
 		}
 
-		return `\n${indent}if (experimentalMiddlewareLocaleSplitting && isServer === false) {\n${indent}\treturn /** @type {any} */ (globalThis).__paraglide.ssr.${safeBundleId}(inputs)\n${indent}}`;
+		return `\n${indent}if (experimentalMiddlewareLocaleSplitting && isServer === false) {\n${indent}\treturn /** @type {any} */ (globalThis).__paraglide.ssr.${safeBundleId}(${inputsName})\n${indent}}`;
 	};
 
 	const clientPartsMiddlewareGuard = (indent: string): string => {
@@ -328,15 +381,15 @@ ${englishMatchTableDoc}${jsDocBundleFunctionTypes({
 		)}`;
 	};
 	const keepUnusedInputsParameter = (indent: string): string =>
-		allStringBranchesInline && !args.experimentalMiddlewareLocaleSplitting
-			? `\n${indent}void inputs;`
+		!anyBranchReadsInputs && !args.experimentalMiddlewareLocaleSplitting
+			? `\n${indent}void ${inputsName};`
 			: "";
 
 	let code = "";
 
 	if (!args.hasMarkup) {
 		code = `${commonJsDoc}
-${isSafeBundleId ? "export " : ""}const ${safeBundleId} = /** @type {(${bundleFunctionType}) & ${messageMetadataType}} */ ((inputs${hasInputs ? "" : " = {}"}, options = {}) => {${clientMiddlewareGuard(
+${isSafeBundleId ? "export " : ""}const ${safeBundleId} = /** @type {(${bundleFunctionType}) & ${messageMetadataType}} */ ((${inputsName}${hasInputs ? "" : " = {}"}, options = {}) => {${clientMiddlewareGuard(
 			"\t"
 		)}${keepUnusedInputsParameter("\t")}
 ${localeResolutionStatement("\t")}
