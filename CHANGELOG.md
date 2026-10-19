@@ -1,5 +1,12 @@
 # @inlang/paraglide-js
 
+## 2.29.1
+
+### Patch Changes
+
+- a99b971: Reduce generated localization payloads by running the message body of messages with inputs, plurals and local variables inside the locale dispatcher instead of calling a function per locale. Messages that a missing-locale fallback calls, markup messages and per-locale builds keep their message functions. Middleware behavior and the injected server message functions are preserved.
+- 0836727: Fail `compile()` when a translation resource file exists but cannot be read, for example because of missing permissions. Previously the error was only logged as a warning after the output had been written without those translations. Missing resource files are still skipped, and the previous output is kept until the file can be read again.
+
 ## 2.29.0
 
 ### Minor Changes
