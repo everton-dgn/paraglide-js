@@ -24,6 +24,7 @@ TypeScript appears to be installed, but failed to load. See the error cause for 
  * Generates `.d.ts` files for the compiled Paraglide output using the TypeScript compiler.
  *
  * @param output - The generated compiler output keyed by relative file path.
+ * @param options - Whether the optional native alias may replace the compiler API.
  * @returns The generated declaration files keyed by relative path.
  *
  * @example
@@ -31,7 +32,8 @@ TypeScript appears to be installed, but failed to load. See the error cause for 
  * // Merge them into the compiler output before writing to disk
  */
 export async function emitTsDeclarations(
-	output: Record<string, string>
+	output: Record<string, string>,
+	options: { allowNativeAlias?: boolean } = {}
 ): Promise<Record<string, string>> {
 	const ts = await importTypeScript();
 
@@ -55,9 +57,11 @@ export async function emitTsDeclarations(
 
 	// TypeScript 7 installed beside TypeScript 5/6, as svelte-check's `--tsgo`
 	// mode needs, emits declarations much faster than the compiler API.
-	const nativeTscJsPath = resolveNativeTscJsPath();
-	if (nativeTscJsPath !== undefined) {
-		return emitWithTscCli(jsEntries, nativeTscJsPath);
+	if (options.allowNativeAlias !== false) {
+		const nativeTscJsPath = resolveNativeTscJsPath();
+		if (nativeTscJsPath !== undefined) {
+			return emitWithTscCli(jsEntries, nativeTscJsPath);
+		}
 	}
 
 	return emitWithCompilerApi(compilerApi, jsEntries);

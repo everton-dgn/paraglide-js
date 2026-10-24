@@ -145,7 +145,14 @@ export const compileProject = async (args: {
 	}
 
 	if (optionsWithDefaults.emitTsDeclarations) {
-		const declarations = await emitTsDeclarations(output);
+		// Additional JavaScript can import project dependencies. Keep the
+		// compiler API's project-relative resolution: the native CLI stages
+		// files in an OS temporary directory, outside the project's packages.
+		const declarations = await emitTsDeclarations(output, {
+			allowNativeAlias: !Object.keys(
+				optionsWithDefaults.additionalFiles ?? {}
+			).some((fileName) => fileName.endsWith(".js")),
+		});
 		Object.assign(output, declarations);
 	}
 

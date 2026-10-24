@@ -1,6 +1,8 @@
-import { expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { loadProjectInMemory, newProject } from "@inlang/sdk";
 import { createRequire } from "node:module";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { compileProject } from "./compile-project.js";
 
@@ -34,23 +36,88 @@ nativeTsc.tscJsPath = path.join(
 	"tsc.js"
 );
 
-test("emitTsDeclarations uses the tsc of @typescript/native when it is installed", async () => {
-	const project = await loadProjectInMemory({
-		blob: await newProject({
-			settings: {
-				locales: ["en"],
-				baseLocale: "en",
+beforeEach(() => vi.clearAllMocks());
+
+const nonJavaScriptAdditionalFiles: (Record<string, string> | undefined)[] = [
+	undefined,
+	{},
+	{ "notes.txt": "Additional documentation" },
+];
+
+test.each(nonJavaScriptAdditionalFiles)(
+	"emitTsDeclarations uses the tsc of @typescript/native with non-JavaScript additionalFiles: %j",
+	async (additionalFiles) => {
+		const project = await loadProjectInMemory({
+			blob: await newProject({
+				settings: {
+					locales: ["en"],
+					baseLocale: "en",
+				},
+			}),
+		});
+
+		const output = await compileProject({
+			project,
+			compilerOptions: {
+				emitTsDeclarations: true,
+				additionalFiles,
 			},
-		}),
-	});
+		});
 
-	const output = await compileProject({
-		project,
-		compilerOptions: {
-			emitTsDeclarations: true,
-		},
-	});
+		expect(output["runtime.d.ts"]).toContain("getLocale");
+		expect(createProgram).not.toHaveBeenCalled();
+	}
+);
 
-	expect(output["runtime.d.ts"]).toContain("getLocale");
-	expect(createProgram).not.toHaveBeenCalled();
-});
+test.each(["custom.js", "messages.js"])(
+	"additionalFiles preserves imported types with @typescript/native installed: %s",
+	async (fileName) => {
+		const projectRoot = await fs.realpath(
+			await fs.mkdtemp(path.join(os.tmpdir(), "paraglide-additional-types-"))
+		);
+		const dependency = path.join(
+			projectRoot,
+			"node_modules",
+			"fixture-dependency"
+		);
+		await fs.mkdir(dependency, { recursive: true });
+		await fs.writeFile(
+			path.join(dependency, "package.json"),
+			JSON.stringify({
+				name: "fixture-dependency",
+				version: "1.0.0",
+				types: "index.d.ts",
+			})
+		);
+		await fs.writeFile(
+			path.join(dependency, "index.d.ts"),
+			"export declare function value(): { id: number };"
+		);
+		const cwd = vi.spyOn(process, "cwd").mockReturnValue(projectRoot);
+
+		try {
+			const project = await loadProjectInMemory({
+				blob: await newProject({
+					settings: { locales: ["en"], baseLocale: "en" },
+				}),
+			});
+			const output = await compileProject({
+				project,
+				compilerOptions: {
+					emitTsDeclarations: true,
+					additionalFiles: {
+						[fileName]:
+							'import { value } from "fixture-dependency"; export const result = value();',
+					},
+				},
+			});
+
+			const declaration = output[fileName.replace(/\.js$/, ".d.ts")];
+			expect(declaration).toMatch(/result:\s*\{\s*id: number;\s*\}/);
+			expect(declaration).not.toMatch(/\bany\b/);
+		} finally {
+			cwd.mockRestore();
+			await fs.rm(projectRoot, { recursive: true, force: true });
+		}
+	}
+);

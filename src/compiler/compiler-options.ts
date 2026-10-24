@@ -325,6 +325,8 @@ export type CompilerOptions = {
 	 * invoked in a child process instead, also when TypeScript 7 is installed
 	 * beside TypeScript 5/6 as `@typescript/native`. The exported types are the
 	 * same, but formatting, ordering and some JSDoc differ between the two.
+	 * When `additionalFiles` contains JavaScript, TypeScript 5/6 keeps using
+	 * the compiler API so imports resolve against the project's dependencies.
 	 *
 	 * @example
 	 * ```ts
