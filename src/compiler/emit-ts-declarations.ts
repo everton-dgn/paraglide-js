@@ -43,13 +43,6 @@ export async function emitTsDeclarations(
 		return {};
 	}
 
-	// TypeScript 7 installed beside TypeScript 5/6, as svelte-check's `--tsgo`
-	// mode needs, emits declarations much faster than the compiler API.
-	const nativeTscJsPath = resolveNativeTscJsPath();
-	if (nativeTscJsPath !== undefined) {
-		return emitWithTscCli(jsEntries, nativeTscJsPath);
-	}
-
 	// TypeScript 7+ (the Go-based compiler) no longer ships the in-process
 	// compiler API — its main entry point only exports version metadata.
 	// https://github.com/opral/paraglide-js/issues/711
@@ -58,6 +51,13 @@ export async function emitTsDeclarations(
 		// resolved before spawning so a missing tsc entry point surfaces its own
 		// pointed error instead of the generic "no declaration files" one
 		return emitWithTscCli(jsEntries, resolveTscJsPath());
+	}
+
+	// TypeScript 7 installed beside TypeScript 5/6, as svelte-check's `--tsgo`
+	// mode needs, emits declarations much faster than the compiler API.
+	const nativeTscJsPath = resolveNativeTscJsPath();
+	if (nativeTscJsPath !== undefined) {
+		return emitWithTscCli(jsEntries, nativeTscJsPath);
 	}
 
 	return emitWithCompilerApi(compilerApi, jsEntries);
