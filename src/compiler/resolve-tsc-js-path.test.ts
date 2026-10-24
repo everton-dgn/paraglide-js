@@ -15,11 +15,12 @@ test("resolveNativeTscJsPath only accepts TypeScript 7+ under the @typescript/na
 	vi.spyOn(process, "cwd").mockReturnValue(project);
 
 	try {
-		const cases: Array<[packageJson: object, expected: string | undefined]> = [
+		const cases: Array<[packageJson: unknown, expected: string | undefined]> = [
 			[{ name: "typescript", version: "7.0.2" }, tscJsPath],
 			// the CLI of TypeScript 5/6 would emit invalid quoted export aliases
 			[{ name: "typescript", version: "6.0.3" }, undefined],
 			[{ name: "typescript" }, undefined],
+			[null, undefined],
 		];
 		for (const [packageJson, expected] of cases) {
 			await fs.writeFile(
