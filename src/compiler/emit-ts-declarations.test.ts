@@ -46,6 +46,7 @@ vi.mock("typescript", async () => {
 const tscResolution = vi.hoisted(() => ({ tscJsPath: "" }));
 
 vi.mock("./resolve-tsc-js-path.js", () => ({
+	resolveNativeTscJsPath: () => undefined,
 	resolveTscJsPath: () => tscResolution.tscJsPath,
 }));
 
