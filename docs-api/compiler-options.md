@@ -59,7 +59,7 @@ false
 
 > `optional` **cleanOutdir**: `boolean`
 
-Defined in: [compiler-options.ts:452](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:455](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 Whether to clean the output directory before writing the new files.
 
@@ -189,7 +189,7 @@ false
 
 > `optional` **disableAsyncLocalStorage**: `boolean`
 
-Defined in: [compiler-options.ts:381](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:384](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 Replaces AsyncLocalStorage with a synchronous implementation.
 
@@ -206,7 +206,7 @@ one request could leak into another concurrent request.
 
 > `optional` **emitGitIgnore**: `boolean`
 
-Defined in: [compiler-options.ts:395](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:398](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 If `emitGitIgnore` is set to `true` a `.gitignore` file will be emitted in the output directory. Defaults to `true`.
 
@@ -275,7 +275,7 @@ true
 
 > `optional` **emitTsDeclarations**: `boolean`
 
-Defined in: [compiler-options.ts:350](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:353](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 Emit `.d.ts` files for the generated output using the TypeScript compiler.
 
@@ -290,8 +290,11 @@ needs to generate declaration files for all output modules.
 
 **Note:** With TypeScript 5/6 the declarations are generated in-process.
 TypeScript 7+ no longer provides the compiler API, so its `tsc` CLI is
-invoked in a child process instead; the emitted declarations are
-semantically equivalent but differ cosmetically between the two.
+invoked in a child process instead, also when TypeScript 7 is installed
+beside TypeScript 5/6 as `@typescript/native`. The exported types are the
+same, but formatting, ordering and some JSDoc differ between the two.
+When `additionalFiles` contains JavaScript, TypeScript 5/6 keeps using
+the compiler API so imports resolve against the project's dependencies.
 
 ##### Example
 
@@ -381,7 +384,7 @@ https://github.com/opral/paraglide-js/issues/88#issuecomment-3634754638
 
 > `optional` **fs**: `any`
 
-Defined in: [compiler-options.ts:459](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:462](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 The file system to use. Defaults to `await import('node:fs')`.
 
@@ -391,7 +394,7 @@ Useful for testing the paraglide compiler by mocking the fs.
 
 > `optional` **includeEslintDisableComment**: `boolean`
 
-Defined in: [compiler-options.ts:368](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:371](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 Whether to include an eslint-disable comment at the top of each .js file.
 
@@ -460,7 +463,7 @@ await compile({
 
 > `optional` **outputStructure**: `"locale-modules"` \| `"message-modules"`
 
-Defined in: [compiler-options.ts:446](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:449](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 The `outputStructure` defines how modules are structured in the output.
 
@@ -585,7 +588,7 @@ Custom strategies with the pattern `custom-[A-Za-z0-9_-]+` are supported.
 
 > `optional` **trailingSlash**: `"always"` \| `"never"`
 
-Defined in: [compiler-options.ts:362](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:365](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 Controls trailing slash canonicalization for localized URLs.
 
@@ -597,7 +600,7 @@ behavior.
 
 > `optional` **urlPatterns**: [`Runtime`](runtime/type/README.md#runtime)\[`"urlPatterns"`\]
 
-Defined in: [compiler-options.ts:354](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
+Defined in: [compiler-options.ts:357](https://github.com/opral/paraglide-js/tree/main/src/compiler/compiler-options.ts)
 
 https://paraglidejs.com/strategy#url
 
